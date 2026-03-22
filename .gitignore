@@ -1,0 +1,4 @@
+./scanner/_scannerv1.go
+./scanner/scanner
+./backend/server
+./scanner/utility
