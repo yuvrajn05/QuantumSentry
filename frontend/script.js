@@ -593,3 +593,74 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') scan();
   });
 });
+
+/* ── 8. History & Audit Functions ───────────────────────────── */
+
+/** Toggle the history panel open/closed */
+function toggleHistory() {
+  const panel = document.getElementById('historyPanel');
+  const isHidden = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !isHidden);
+  if (isHidden) loadHistory();
+}
+
+/** Load scan history from the backend and render it */
+async function loadHistory() {
+  const list = document.getElementById('historyList');
+  list.innerHTML = '<span style="color:var(--muted);font-size:.85rem">Loading…</span>';
+
+  try {
+    const res  = await fetch('http://localhost:8080/history');
+    const data = await res.json();
+    const scans = data.scans || [];
+
+    if (scans.length === 0) {
+      list.innerHTML = '<span style="color:var(--muted);font-size:.85rem">No scans yet. Run your first scan above.</span>';
+      return;
+    }
+
+    list.innerHTML = scans.map(s => {
+      const vColors = { safe: '#10b981', hybrid: '#f59e0b', vuln: '#ef4444', unknown: '#6b7280' };
+      const vIcons  = { safe: '🟢', hybrid: '🟡', vuln: '🔴', unknown: '⚪' };
+      const color   = vColors[s.verdict] || vColors.unknown;
+      const icon    = vIcons[s.verdict]  || vIcons.unknown;
+      const date    = new Date(s.timestamp).toLocaleString('en-GB', { dateStyle:'short', timeStyle:'short' });
+
+      return `
+      <div class="history-item" onclick="loadHistoryScan('${s.id}', '${s.target}')" title="Click to load this scan">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;font-size:.85rem;color:var(--text)">${s.target}</span>
+          <span style="font-size:.75rem;color:var(--muted)">${date}</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+          <span style="font-size:.8rem;color:${color}">${icon} ${s.verdict_label}</span>
+          <span style="font-size:.72rem;color:var(--muted);margin-left:auto">${s.tls_version} · ${s.selected_group || 'classical'}</span>
+        </div>
+      </div>`;
+    }).join('');
+
+  } catch (err) {
+    list.innerHTML = `<span style="color:var(--vuln);font-size:.85rem">Failed: ${err.message}</span>`;
+  }
+}
+
+/** Re-load a historical scan result by fetching its CBOM */
+async function loadHistoryScan(id, target) {
+  document.getElementById('target').value = target;
+  setStatus(`⏳ Loading scan <b>${target}</b>…`, 'scanning');
+  document.getElementById('result').innerHTML = '';
+
+  try {
+    const res  = await fetch(`http://localhost:8080/history/${encodeURIComponent(id)}`);
+    const data = await res.json();
+    setStatus(`✅ Loaded historical scan for <b>${target}</b>`, 'success');
+    render(data);
+  } catch (err) {
+    setStatus(`❌ Failed to load: ${err.message}`, 'error');
+  }
+}
+
+/** Open audit trail in a new tab (returns JSON) */
+function openAudit() {
+  window.open('http://localhost:8080/audit', '_blank');
+}

@@ -26,9 +26,13 @@
           <span class="logo-sub">PQC Readiness Scanner</span>
         </div>
       </div>
-      <div class="header-badge">
-        <span class="pulse"></span>
-        Live Scanner
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="export-btn" onclick="toggleHistory()" id="historyBtn" title="View scan history">🕑 History</button>
+        <button class="export-btn" onclick="openAudit()"   id="auditBtn"   title="View audit trail">📋 Audit Log</button>
+        <div class="header-badge">
+          <span class="pulse"></span>
+          Live Scanner
+        </div>
       </div>
     </div>
   </header>
@@ -64,6 +68,17 @@
 
     <!-- Status -->
     <div id="status" class="status-bar hidden"></div>
+
+    <!-- History Panel (collapsible) -->
+    <div id="historyPanel" class="history-panel hidden">
+      <div class="history-header">
+        <span>🕑 Scan History</span>
+        <button class="export-btn" onclick="loadHistory()">↺ Refresh</button>
+      </div>
+      <div id="historyList" class="history-list">
+        <span style="color:var(--muted);font-size:.85rem">Loading…</span>
+      </div>
+    </div>
 
     <!-- Results -->
     <div id="result"></div>
