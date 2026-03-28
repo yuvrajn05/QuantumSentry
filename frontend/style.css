@@ -307,3 +307,26 @@ button#scanBtn:disabled { opacity: .5; cursor: wait; }
 
 /* ─── Divider ────────────────────────────────────────────────── */
 .divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+/* ─── Export Buttons ────────────────────────────────────────────── */
+.export-btn {
+  font-size: .75rem; font-family: var(--font); font-weight: 600;
+  color: var(--accent2); background: rgba(99,102,241,.12);
+  border: 1px solid rgba(99,102,241,.3); border-radius: 8px;
+  padding: 6px 14px; cursor: pointer;
+  transition: background .15s, transform .1s;
+  white-space: nowrap;
+}
+.export-btn:hover  { background: rgba(99,102,241,.22); }
+.export-btn:active { transform: scale(.96); }
+.export-pdf { color: var(--safe); background: var(--safe-bg); border-color: rgba(16,185,129,.3); }
+.export-pdf:hover { background: rgba(16,185,129,.2); }
+
+/* ─── Urgency Dot (Recommendations tab indicator) ──────────────── */
+.urgency-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--vuln); margin-left: 4px; vertical-align: middle;
+  animation: pulse 1.5s infinite;
+}
+.tab-btn.tab-urgent { color: #f87171; }
+
