@@ -117,6 +117,33 @@
 
   <script src="script.js"></script>
 
+  <!-- Login Modal -->
+  <div id="loginModal" class="modal-overlay" style="z-index:2000;">
+    <div class="modal-box" style="max-width:420px;">
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="font-size:2rem;margin-bottom:8px">⛛️</div>
+        <div style="font-size:1.2rem;font-weight:700;color:var(--text)">QuantumSentry</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">Sign in to continue</div>
+      </div>
+      <div id="loginError" class="login-error hidden"></div>
+      <div class="login-field">
+        <label class="login-label">Username</label>
+        <input id="loginUser" type="text" class="login-input" placeholder="admin" autocomplete="username" />
+      </div>
+      <div class="login-field">
+        <label class="login-label">Password</label>
+        <input id="loginPass" type="password" class="login-input" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <button class="scan-btn-bulk" style="width:100%;margin-top:8px;padding:12px" onclick="doLogin()" id="loginBtn">Sign In</button>
+      <div style="margin-top:16px;padding:12px;background:var(--bg-soft);border-radius:8px;font-size:.75rem;color:var(--muted);">
+        <strong style="color:var(--text)">Default accounts:</strong><br/>
+        admin / QuantumSentry@Admin2026<br/>
+        auditor / QuantumSentry@Audit2026<br/>
+        viewer / QuantumSentry@View2026
+      </div>
+    </div>
+  </div>
+
   <!-- Audit Log Modal -->
   <div id="auditModal" class="modal-overlay hidden" onclick="closeAudit(event)">
     <div class="modal-box">

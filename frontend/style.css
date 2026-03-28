@@ -458,4 +458,22 @@ button#scanBtn:disabled { opacity: .5; cursor: wait; }
   border-radius: 5px; padding: 2px 7px; white-space: nowrap;
 }
 
+/* ─── Login Modal ─────────────────────────────────────────────── */
+.login-field  { margin-bottom: 14px; }
+.login-label  { display: block; font-size: .78rem; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+.login-input  {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); font-family: var(--font);
+  font-size: .88rem; padding: 10px 12px; outline: none;
+  transition: border-color .2s;
+}
+.login-input:focus { border-color: var(--accent2); }
+.login-error {
+  background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+  color: #f87171; border-radius: 8px; padding: 9px 12px;
+  font-size: .82rem; margin-bottom: 14px;
+}
+
+
 

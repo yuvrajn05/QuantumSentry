@@ -1,7 +1,8 @@
-/* ──────────────────────────────────────────────────────────────
+/* ──────────────────────────────────────────────────────────
    QuantumSentry — Dashboard Script
    
    Sections:
+   0. Authentication (JWT login/logout, role-based UI)
    1. PQC Classification Constants
    2. PQC Verdict Engine
    3. Recommendations Engine (new)
@@ -9,7 +10,156 @@
    5. Render Engine
    6. Tab / UI Helpers
    7. Scan Function
-────────────────────────────────────────────────────────────── */
+   8. History & Audit Functions
+   9. Bulk Scan Functions
+────────────────────────────────────────────────────────── */
+
+/* ── 0. Authentication ──────────────────────────────────────── */
+
+const TOKEN_KEY = 'qs_token';
+const USER_KEY  = 'qs_user';
+
+/** Return stored JWT or null */
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+
+/** Return stored user object {username, role} or null */
+function getUser()  {
+  try { return JSON.parse(localStorage.getItem(USER_KEY)); }
+  catch { return null; }
+}
+
+/** Add Authorization header to a fetch options object */
+function authHeaders(opts = {}) {
+  const token = getToken();
+  return {
+    ...opts,
+    headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` },
+  };
+}
+
+/** Authenticated fetch — injects Bearer token automatically */
+function authFetch(url, opts = {}) {
+  return fetch(url, authHeaders(opts));
+}
+
+/** Perform login — POST /auth/login */
+async function doLogin() {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const errEl    = document.getElementById('loginError');
+  const btn      = document.getElementById('loginBtn');
+
+  if (!username || !password) {
+    showLoginError('Please enter username and password.');
+    return;
+  }
+
+  btn.disabled    = true;
+  btn.textContent = 'Signing in…';
+  errEl.classList.add('hidden');
+
+  try {
+    const res  = await fetch('http://localhost:8080/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showLoginError(data.error || 'Login failed.');
+      btn.disabled = false; btn.textContent = 'Sign In';
+      return;
+    }
+
+    // Store token + user info
+    localStorage.setItem(TOKEN_KEY, data.token);
+    localStorage.setItem(USER_KEY, JSON.stringify({ username: data.username, role: data.role }));
+
+    // Hide login modal and show dashboard
+    document.getElementById('loginModal').classList.add('hidden');
+    applyRoleUI(data.role);
+    renderUserBadge(data.username, data.role);
+
+  } catch (err) {
+    showLoginError('Connection error: ' + err.message);
+    btn.disabled = false; btn.textContent = 'Sign In';
+  }
+}
+
+/** Show login error message */
+function showLoginError(msg) {
+  const el = document.getElementById('loginError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+/** Log out — clear token and reload */
+function doLogout() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  location.reload();
+}
+
+/** Render user badge + logout button in the header */
+function renderUserBadge(username, role) {
+  const roleColors = { admin: '#818cf8', auditor: '#f59e0b', viewer: '#10b981' };
+  const color = roleColors[role] || '#6b7280';
+  const badge = document.createElement('div');
+  badge.id    = 'userBadge';
+  badge.style.cssText = 'display:flex;gap:8px;align-items:center;';
+  badge.innerHTML = `
+    <span style="font-size:.78rem;color:var(--muted)">Signed in as</span>
+    <span style="font-weight:600;font-size:.82rem;color:${color}">${username}</span>
+    <span style="font-size:.65rem;background:${color}22;color:${color};padding:2px 7px;border-radius:5px;font-weight:700;text-transform:uppercase">${role}</span>
+    <button class="export-btn" onclick="doLogout()" style="color:#ef4444">Sign Out</button>`;
+
+  // Insert into header before the header-badge
+  const hdr = document.querySelector('.header-inner');
+  const live = hdr.querySelector('.header-badge').parentElement;
+  live.insertBefore(badge, live.querySelector('.header-badge'));
+}
+
+/** Apply role-based UI restrictions */
+function applyRoleUI(role) {
+  if (role === 'auditor') {
+    // Auditor cannot trigger scans
+    const scanBtn = document.getElementById('scanBtn');
+    if (scanBtn) { scanBtn.disabled = true; scanBtn.title = 'Auditor role cannot trigger scans'; }
+    const bulkBtn = document.querySelector('.scan-btn-bulk');
+    if (bulkBtn) { bulkBtn.disabled = true; }
+  }
+}
+
+/** Init auth on page load — show login if no valid token */
+async function initAuth() {
+  const token = getToken();
+  const user  = getUser();
+
+  if (!token || !user) {
+    // No token — show login modal
+    document.getElementById('loginModal').classList.remove('hidden');
+    // Allow Enter key in login fields
+    ['loginUser','loginPass'].forEach(id =>
+      document.getElementById(id).addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); })
+    );
+    return;
+  }
+
+  // Verify token is still valid
+  try {
+    const res = await fetch('http://localhost:8080/auth/me', authHeaders());
+    if (!res.ok) throw new Error('invalid');
+    document.getElementById('loginModal').classList.add('hidden');
+    applyRoleUI(user.role);
+    renderUserBadge(user.username, user.role);
+  } catch {
+    // Token expired — clear and show login
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    document.getElementById('loginModal').classList.remove('hidden');
+  }
+}
 
 /* ── 1. PQC Classification Constants ─────────────────────────── */
 
@@ -568,7 +718,7 @@ async function scan() {
   setStatus(`⏳ &nbsp;Scanning <b>${target}</b>…`, 'scanning');
 
   try {
-    const res  = await fetch(`http://localhost:8080/scan?target=${encodeURIComponent(target)}`);
+    const res  = await authFetch(`http://localhost:8080/scan?target=${encodeURIComponent(target)}`);
     const data = await res.json();
 
     if (data.error) {
@@ -592,6 +742,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('target').addEventListener('keydown', e => {
     if (e.key === 'Enter') scan();
   });
+  initAuth(); // check token, show login modal if needed
 });
 
 /* ── 9. Bulk Scan Functions ──────────────────────────────── */
@@ -654,7 +805,7 @@ async function bulkScan() {
   document.getElementById('bulkDownloadBtn').style.display  = 'none';
 
   try {
-    const res  = await fetch('http://localhost:8080/scan/bulk', {
+    const res  = await authFetch('http://localhost:8080/scan/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targets }),
@@ -773,7 +924,7 @@ async function loadHistory() {
   list.innerHTML = '<span style="color:var(--muted);font-size:.85rem">Loading…</span>';
 
   try {
-    const res  = await fetch('http://localhost:8080/history');
+    const res  = await authFetch('http://localhost:8080/history');
     const data = await res.json();
     const scans = data.scans || [];
 
@@ -814,7 +965,7 @@ async function loadHistoryScan(id, target) {
   document.getElementById('result').innerHTML = '';
 
   try {
-    const res  = await fetch(`http://localhost:8080/history/${encodeURIComponent(id)}`);
+    const res  = await authFetch(`http://localhost:8080/history/${encodeURIComponent(id)}`);
     const data = await res.json();
     setStatus(`✅ Loaded historical scan for <b>${target}</b>`, 'success');
     render(data);
@@ -846,7 +997,7 @@ async function loadAudit() {
 
   let entries = [];
   try {
-    const data = await fetch('http://localhost:8080/audit').then(r => r.json());
+    const data = await authFetch('http://localhost:8080/audit').then(r => r.json());
     entries = data.entries || [];
   } catch (err) {
     wrap.innerHTML = `<span style="color:var(--vuln);font-size:.85rem">❌ ${err.message}</span>`;

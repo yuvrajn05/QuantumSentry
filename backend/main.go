@@ -23,6 +23,7 @@ import (
 
 func main() {
 	InitDB()
+	initUsersTable() // seed default admin/auditor/viewer accounts
 
 	r := gin.Default()
 	r.Use(cors.Default())
@@ -51,8 +52,15 @@ func main() {
 	r.GET("/script.js", func(c *gin.Context) { c.File("../frontend/script.js") })
 	r.GET("/style.css", func(c *gin.Context) { c.File("../frontend/style.css") })
 
-	// ── GET /scan?target=<host:port> ───────────────────────────────────────
-	r.GET("/scan", func(c *gin.Context) {
+	// ── Auth routes (public) ───────────────────────────────────────────────
+	r.POST("/auth/login", handleLogin)
+	r.GET("/auth/me", AuthMiddleware(), handleMe)
+
+	// ── Protected routes ──────────────────────────────────────────────────
+	protected := r.Group("/", AuthMiddleware())
+	{
+	// ── GET /scan?target=<host:port> ──────────────────────────────────────
+	protected.GET("/scan", RequireRole("admin", "viewer"), func(c *gin.Context) {
 		target := c.Query("target")
 		if target == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "target query param required"})
@@ -131,8 +139,8 @@ func main() {
 		})
 	})
 
-	// ── GET /history ───────────────────────────────────────────────────────
-	r.GET("/history", func(c *gin.Context) {
+	// ── GET /history ─────────────────────────────────────────────────────
+	protected.GET("/history", RequireRole("admin", "auditor"), func(c *gin.Context) {
 		records, err := GetHistory(50)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -144,8 +152,8 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"scans": records})
 	})
 
-	// ── GET /history/:id ───────────────────────────────────────────────────
-	r.GET("/history/:id", func(c *gin.Context) {
+	// ── GET /history/:id ─────────────────────────────────────────────────
+	protected.GET("/history/:id", RequireRole("admin", "auditor"), func(c *gin.Context) {
 		rec, err := GetScanByID(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -158,8 +166,8 @@ func main() {
 		c.Data(http.StatusOK, "application/json", []byte(rec.CBOMJson))
 	})
 
-	// ── GET /audit ─────────────────────────────────────────────────────────
-	r.GET("/audit", func(c *gin.Context) {
+	// ── GET /audit ───────────────────────────────────────────────────────
+	protected.GET("/audit", RequireRole("admin", "auditor"), func(c *gin.Context) {
 		entries, err := GetAuditLog(200)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -170,6 +178,7 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"entries": entries})
 	})
+	} // end protected group
 
 	r.Run(":8080")
 }
