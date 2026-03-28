@@ -1,4 +1,22 @@
-./scanner/_scannerv1.go
-./scanner/scanner
-./backend/server
-./scanner/utility
+# ── Compiled binaries ──────────────────────────────────────────
+scanner/scanner
+scanner/scanner.exe
+backend/server
+backend/server.exe
+
+# ── Go module cache / test artifacts ───────────────────────────
+*.test
+*.out
+
+# ── Temporary / debug files ─────────────────────────────────────
+backend/scan_result.json
+backend/server.log
+scanner/utility/
+iface_lister/
+
+# ── Legacy / archived versions ──────────────────────────────────
+scanner/_scannerv1.go
+
+# ── OS artifacts ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

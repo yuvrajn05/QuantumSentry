@@ -1,31 +1,72 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>TLS Scanner Dashboard</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuantumSentry — PQC Readiness Scanner</title>
+  <meta name="description" content="Post-Quantum Cryptography readiness scanner. Analyse TLS connections and certificates for quantum vulnerability." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
 </head>
+<body>
 
-<body class="bg-gray-100 min-h-screen">
+  <!-- Background -->
+  <div class="bg-grid"></div>
 
-  <div class="max-w-5xl mx-auto p-6">
-
-    <h1 class="text-3xl font-bold mb-6">🔐 TLS Scanner Dashboard</h1>
-
-    <!-- INPUT -->
-    <div class="flex gap-2 mb-6">
-      <input id="target" class="flex-1 p-3 border rounded" placeholder="example.com:443"/>
-      <button onclick="scan()" class="bg-blue-600 text-white px-6 py-3 rounded">
-        Scan
-      </button>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">⚛</span>
+        <div>
+          <span class="logo-title">QuantumSentry</span>
+          <span class="logo-sub">PQC Readiness Scanner</span>
+        </div>
+      </div>
+      <div class="header-badge">
+        <span class="pulse"></span>
+        Live Scanner
+      </div>
     </div>
+  </header>
 
-    <!-- STATUS -->
-    <div id="status" class="mb-4 text-gray-600"></div>
+  <!-- Main -->
+  <main class="main">
 
-    <!-- RESULTS -->
-    <div id="result" class="space-y-6"></div>
+    <!-- Hero -->
+    <section class="hero">
+      <h1 class="hero-title">Is your TLS <span class="gradient-text">quantum-safe</span>?</h1>
+      <p class="hero-sub">Scan any HTTPS endpoint to analyse its cryptographic posture against post-quantum threats. Generates a full CBOM report.</p>
+    </section>
 
-  </div>
+    <!-- Scan Input -->
+    <section class="scan-box">
+      <div class="scan-input-row">
+        <div class="input-wrap">
+          <span class="input-icon">🌐</span>
+          <input id="target" type="text" placeholder="example.com:443" autocomplete="off" spellcheck="false" />
+        </div>
+        <button id="scanBtn" onclick="scan()">
+          <span id="btnText">Scan</span>
+          <span id="btnLoader" class="btn-loader hidden"></span>
+        </button>
+      </div>
+      <div class="quick-targets">
+        <span class="qt-label">Quick:</span>
+        <button class="qt-btn" onclick="quickScan('google.com:443')">google.com</button>
+        <button class="qt-btn" onclick="quickScan('cloudflare.com:443')">cloudflare.com</button>
+        <button class="qt-btn" onclick="quickScan('github.com:443')">github.com</button>
+      </div>
+    </section>
+
+    <!-- Status -->
+    <div id="status" class="status-bar hidden"></div>
+
+    <!-- Results -->
+    <div id="result"></div>
+
+  </main>
 
   <script src="script.js"></script>
 </body>

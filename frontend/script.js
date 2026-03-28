@@ -1,172 +1,259 @@
-async function scan() {
-  const target = document.getElementById("target").value;
-  const result = document.getElementById("result");
-  const status = document.getElementById("status");
+/* ──────────────────────────────────────────────────────────────
+   QuantumSentry — Dashboard Script
+   PQC verdict engine + tabbed result cards
+────────────────────────────────────────────────────────────── */
 
+const PQ_GROUPS = [
+  'MLKEM512', 'MLKEM768', 'MLKEM1024',
+  'X25519MLKEM768', 'SecP256r1MLKEM768', 'SecP384r1MLKEM1024',
+];
+const HYBRID_GROUPS = [
+  'X25519MLKEM768', 'SecP256r1MLKEM768', 'SecP384r1MLKEM1024',
+];
+const PQ_SIG_ALGOS  = ['ML-DSA', 'SLH-DSA', 'Falcon', 'Dilithium'];
+const VULN_KEY_ALGOS = ['RSA', 'ECDSA', 'ECDH', 'DSA', 'Ed25519', 'Ed448'];
+
+/* ── PQC Verdict ─────────────────────────────────────────────── */
+function computeVerdict(tls, cert) {
+  const selected  = tls.selected_group  || '';
+  const supported = tls.supported_groups || [];
+  const sigAlgo   = cert.signature_algorithm || '';
+  const pubKeyAlgo = cert.public_key_algorithm || '';
+
+  const isPurePQ   = PQ_GROUPS.filter(g => !HYBRID_GROUPS.includes(g)).some(g =>
+    selected === g || supported.includes(g));
+  const isHybrid   = HYBRID_GROUPS.some(g => selected === g || supported.includes(g));
+  const hasPQSig   = PQ_SIG_ALGOS.some(a => sigAlgo.includes(a));
+  const hasVulnSig = VULN_KEY_ALGOS.some(a =>
+    pubKeyAlgo.toUpperCase().includes(a.toUpperCase()) || sigAlgo.toUpperCase().includes(a.toUpperCase()));
+
+  if ((isPurePQ || isHybrid) && !hasVulnSig) {
+    return { cls: 'safe',   icon: '🟢', label: 'Post-Quantum Safe' };
+  }
+  if (isHybrid && hasVulnSig) {
+    return { cls: 'hybrid', icon: '🟡', label: 'Hybrid PQ — Partially Safe' };
+  }
+  if (isPurePQ && hasVulnSig) {
+    return { cls: 'hybrid', icon: '🟡', label: 'Hybrid PQ — Cert Vulnerable' };
+  }
+  return { cls: 'vuln', icon: '🔴', label: 'Quantum Vulnerable' };
+}
+
+/* ── Classify a group tag ────────────────────────────────────── */
+function groupClass(g) {
+  if (PQ_GROUPS.filter(x => !HYBRID_GROUPS.includes(x)).includes(g)) return 'pq';
+  if (HYBRID_GROUPS.includes(g)) return 'hybrid';
+  return 'classic';
+}
+
+/* ── Helpers ─────────────────────────────────────────────────── */
+function fmt(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function val(v)   { return v || '<span style="color:var(--muted)">—</span>'; }
+function mono(v)  { return `<span class="info-value highlight">${val(v)}</span>`; }
+
+let activeTabState = {};
+
+function switchTab(cardId, tab) {
+  activeTabState[cardId] = tab;
+  ['network','tls','cert'].forEach(t => {
+    document.getElementById(`${t}-${cardId}`).classList.remove('active');
+    document.getElementById(`tab-${t}-${cardId}`).classList.remove('active');
+  });
+  document.getElementById(`${tab}-${cardId}`).classList.add('active');
+  document.getElementById(`tab-${tab}-${cardId}`).classList.add('active');
+}
+
+function filterDNS(id, q) {
+  const list = document.getElementById(id);
+  for (const item of list.children) {
+    item.style.display = item.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+  }
+}
+
+/* ── Quick scan shortcut ─────────────────────────────────────── */
+function quickScan(target) {
+  document.getElementById('target').value = target;
+  scan();
+}
+
+/* ── Set scanning state ─────────────────────────────────────── */
+function setScanning(yes) {
+  const btn    = document.getElementById('scanBtn');
+  const text   = document.getElementById('btnText');
+  const loader = document.getElementById('btnLoader');
+  btn.disabled = yes;
+  text.classList.toggle('hidden', yes);
+  loader.classList.toggle('hidden', !yes);
+}
+
+function setStatus(msg, type) {
+  const el = document.getElementById('status');
+  el.className = `status-bar ${type}`;
+  el.classList.remove('hidden');
+  el.innerHTML = msg;
+}
+
+/* ── Main scan function ──────────────────────────────────────── */
+async function scan() {
+  const target = document.getElementById('target').value.trim();
   if (!target) return;
 
-  result.innerHTML = "";
-  status.innerText = "⏳ Scanning...";
+  document.getElementById('result').innerHTML = '';
+  setScanning(true);
+  setStatus('⏳ &nbsp;Scanning <b>' + target + '</b>…', 'scanning');
 
   try {
-    const res = await fetch(`http://localhost:8080/scan?target=${target}`);
+    const res  = await fetch(`http://localhost:8080/scan?target=${encodeURIComponent(target)}`);
     const data = await res.json();
-    console.log(data);
+
     if (data.error) {
-      status.innerHTML = `<span class="text-red-500">${data.error}</span>`;
+      setStatus(`❌ &nbsp;${data.error}`, 'error');
+      setScanning(false);
       return;
     }
 
-    status.innerText = "✅ Scan complete";
+    setStatus(`✅ &nbsp;Scan complete — <b>${(data.assets || []).length}</b> asset(s) found`, 'success');
     render(data);
-
   } catch (err) {
-    status.innerHTML = `<span class="text-red-500">Request failed</span>`;
+    console.error(err);
+    setStatus(`❌ &nbsp;Request failed: ${err.message}`, 'error');
+  } finally {
+    setScanning(false);
   }
 }
 
+/* ── Render results ──────────────────────────────────────────── */
 function render(data) {
-  const container = document.getElementById("result");
-  container.innerHTML = "";
+  const container = document.getElementById('result');
+  container.innerHTML = '';
 
-  data.assets.forEach((asset, index) => {
-    const net = asset.network;
-    const tls = asset.protocols[0];
-    const cert = asset.certificates[0];
+  (data.assets || []).forEach((asset, idx) => {
+    const net  = asset.network       || {};
+    const tls  = (asset.protocols    || [])[0] || {};
+    const cert = (asset.certificates || [])[0] || {};
+    const id   = `asset-${idx}`;
 
-    const dnsListId = `dns-${index}`;
+    const verdict = computeVerdict(tls, cert);
 
-    const supportedGroups = tls.supported_groups.map(tag).join("");
-    const oids = cert.oids.map(tagSmall).join("");
-    const keyUsage = cert.key_usage.map(tagSmall).join("");
+    /* ── Supported Groups ── */
+    const groupTags = (tls.supported_groups || []).map(g =>
+      `<span class="tag ${groupClass(g)}">${g}</span>`
+    ).join('') || '<span class="tag classic">none captured</span>';
 
-    const algorithms = tls.algorithms.map(a => `
-      <div class="border p-3 rounded bg-gray-50">
-        <p><b>${a.name}</b> (${a.mode})</p>
-        <p class="text-sm text-gray-600">${a.security_bits} bits</p>
-      </div>
-    `).join("");
+    /* ── Algorithms ── */
+    const algoCards = (tls.algorithms || []).map(a => `
+      <div class="algo-card">
+        <div class="algo-name">${a.name}</div>
+        <div class="algo-mode">${a.mode ? a.mode + ' mode' : a.primitive}</div>
+        <div class="algo-bits">${a.security_bits ? a.security_bits + ' bits' : ''}</div>
+      </div>`).join('') || '<span style="color:var(--muted);font-size:.85rem">No algorithms parsed</span>';
+
+    /* ── OIDs ── */
+    const oidPills = (cert.oids || []).map(o =>
+      `<span class="oid-pill">${o}</span>`).join('');
+
+    /* ── DNS list ── */
+    const dnsList = (cert.dns_names || []).map(d =>
+      `<div class="dns-item">${d}</div>`).join('');
+
+    /* ── KEM group classification ── */
+    const selectedGroupClass = groupClass(tls.selected_group || '');
+    const selectedGroupColor =
+      selectedGroupClass === 'pq'     ? 'safe'  :
+      selectedGroupClass === 'hybrid' ? 'hybrid': 'vuln';
 
     container.innerHTML += `
-      <div class="bg-white rounded-xl shadow p-5">
+    <div class="asset-card">
 
-        <h2 class="text-xl font-bold mb-4">Asset ${index + 1}</h2>
-
-        <!-- TABS -->
-        <div class="flex gap-4 border-b mb-4">
-            ${tabButton("Network", "network", index, true)}
-            ${tabButton("TLS", "tls", index)}
-            ${tabButton("Certificate", "cert", index)}
+      <!-- Header -->
+      <div class="card-header">
+        <div>
+          <div class="card-title">Asset ${idx + 1}</div>
+          <div class="card-host">${asset.host || data.target || '—'}</div>
         </div>
-
-        <!-- NETWORK -->
-        <div id="network-${index}" class="tab-content">
-          <p><b>Source IP:</b> ${net.source_ip}</p>
-          <p><b>Destination IP:</b> ${net.destination_ip}</p>
-          <p><b>SNI:</b> ${net.sni}</p>
+        <div class="verdict ${verdict.cls}">
+          <span class="verdict-dot"></span>
+          ${verdict.icon} ${verdict.label}
         </div>
-
-        <!-- TLS -->
-        <div id="tls-${index}" class="tab-content hidden">
-          <p><b>Version:</b> ${tls.version}</p>
-          <p><b>Cipher:</b> ${tls.cipher_suite}</p>
-          <p><b>Selected Group:</b> ${tls.selected_group}</p>
-
-          <div class="mt-3">
-            <b>Supported Groups:</b><br/>
-            ${supportedGroups}
-          </div>
-
-          <div class="mt-3">
-            <b>Algorithms:</b>
-            <div class="grid grid-cols-2 gap-2 mt-2">
-              ${algorithms}
-            </div>
-          </div>
-        </div>
-
-        <!-- CERT -->
-        <div id="cert-${index}" class="tab-content hidden">
-          <p><b>Subject:</b> ${cert.subject}</p>
-          <p><b>Issuer:</b> ${cert.issuer}</p>
-          <p><b>Serial:</b> ${cert.serial_number}</p>
-          <p><b>Valid:</b> ${formatDate(cert.valid_from)} → ${formatDate(cert.valid_to)}</p>
-          <p><b>Public Key:</b> ${cert.public_key_algorithm} (${cert.public_key_size})</p>
-          <p><b>Is CA:</b> ${cert.is_ca}</p>
-
-          <div class="mt-3">
-            <b>Key Usage:</b><br/>
-            ${keyUsage}
-          </div>
-
-          <div class="mt-3">
-            <b>OIDs:</b><br/>
-            ${oids}
-          </div>
-
-          <div class="mt-4">
-            <b>DNS Names (${cert.dns_names.length}):</b>
-
-            <input 
-              placeholder="Search DNS..." 
-              class="border p-1 mt-2 mb-2 w-full"
-              oninput="filterDNS('${dnsListId}', this.value)"
-            />
-
-            <div id="${dnsListId}" class="max-h-40 overflow-auto border rounded p-2 text-sm">
-              ${cert.dns_names.map(d => `<div>${d}</div>`).join("")}
-            </div>
-          </div>
-        </div>
-
       </div>
-    `;
+
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab-btn active" id="tab-network-${id}" onclick="switchTab('${id}','network')">🌐 Network</button>
+        <button class="tab-btn"        id="tab-tls-${id}"     onclick="switchTab('${id}','tls')">🔐 TLS</button>
+        <button class="tab-btn"        id="tab-cert-${id}"    onclick="switchTab('${id}','cert')">📜 Certificate</button>
+      </div>
+
+      <!-- NETWORK panel -->
+      <div class="tab-panel active" id="network-${id}">
+        <div class="info-grid">
+          <div class="info-item"><div class="info-label">Source IP</div><div class="info-value">${val(net.source_ip)}</div></div>
+          <div class="info-item"><div class="info-label">Destination IP</div><div class="info-value">${val(net.destination_ip)}</div></div>
+          <div class="info-item"><div class="info-label">SNI</div><div class="info-value highlight">${val(net.sni)}</div></div>
+          <div class="info-item"><div class="info-label">ALPN</div><div class="info-value">${val(tls.alpn)}</div></div>
+        </div>
+      </div>
+
+      <!-- TLS panel -->
+      <div class="tab-panel" id="tls-${id}">
+        <div class="info-grid">
+          <div class="info-item"><div class="info-label">TLS Version</div><div class="info-value highlight">${val(tls.version)}</div></div>
+          <div class="info-item"><div class="info-label">Cipher Suite</div><div class="info-value" style="font-size:.8rem">${val(tls.cipher_suite)}</div></div>
+          <div class="info-item" style="grid-column:1/-1">
+            <div class="info-label">Selected Key Exchange Group (KEM)</div>
+            <div class="info-value ${selectedGroupColor}">${val(tls.selected_group)}</div>
+          </div>
+        </div>
+
+        <div class="section-label">Supported Groups (advertised in ClientHello)</div>
+        <div class="tags">${groupTags}</div>
+
+        <div class="section-label">Algorithms in Cipher Suite</div>
+        <div class="algo-grid">${algoCards}</div>
+      </div>
+
+      <!-- CERT panel -->
+      <div class="tab-panel" id="cert-${id}">
+        <div class="info-grid">
+          <div class="info-item" style="grid-column:1/-1">
+            <div class="info-label">Subject</div>
+            <div class="info-value highlight">${val(cert.subject)}</div>
+          </div>
+          <div class="info-item" style="grid-column:1/-1">
+            <div class="info-label">Issuer</div>
+            <div class="info-value">${val(cert.issuer)}</div>
+          </div>
+          <div class="info-item"><div class="info-label">Public Key</div><div class="info-value">${val(cert.public_key_algorithm)} (${cert.public_key_size || '?'} bits)</div></div>
+          <div class="info-item"><div class="info-label">Signature Algorithm</div><div class="info-value">${val(cert.signature_algorithm)}</div></div>
+          <div class="info-item"><div class="info-label">Valid From</div><div class="info-value">${fmt(cert.valid_from)}</div></div>
+          <div class="info-item"><div class="info-label">Valid To</div><div class="info-value">${fmt(cert.valid_to)}</div></div>
+          <div class="info-item"><div class="info-label">Serial Number</div><div class="info-value" style="font-size:.75rem">${val(cert.serial_number)}</div></div>
+          <div class="info-item"><div class="info-label">Is CA</div><div class="info-value">${cert.is_ca ? '✅ Yes' : '— No'}</div></div>
+        </div>
+
+        <div class="section-label">Key Usage</div>
+        <div class="tags">${(cert.key_usage || []).map(k => `<span class="tag">${k}</span>`).join('') || '—'}</div>
+
+        <div class="section-label">Extension OIDs</div>
+        <div class="tags">${oidPills || '—'}</div>
+
+        <div class="divider"></div>
+
+        <div class="section-label">DNS Names (${(cert.dns_names || []).length})</div>
+        <input class="dns-search" placeholder="Search DNS names…" oninput="filterDNS('dns-${id}', this.value)" />
+        <div class="dns-list" id="dns-${id}">${dnsList}</div>
+      </div>
+
+    </div>`;
   });
 }
 
-/* ---------- Helpers ---------- */
-
-function tabButton(label, id, index, active=false) {
-  return `
-    <button 
-      onclick="switchTab('${id}', ${index})"
-      class="pb-2 ${active ? 'border-b-2 border-blue-500 font-semibold' : ''}"
-      id="tab-${id}-${index}"
-    >
-      ${label}
-    </button>
-  `;
-}
-
-function switchTab(tab, index) {
-  ["network", "tls", "cert"].forEach(t => {
-    document.getElementById(`${t}-${index}`).classList.add("hidden");
-    document.getElementById(`tab-${t}-${index}`).classList.remove("border-blue-500","font-semibold");
+/* ── Enter key support ───────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('target').addEventListener('keydown', e => {
+    if (e.key === 'Enter') scan();
   });
-
-  document.getElementById(`${tab}-${index}`).classList.remove("hidden");
-  document.getElementById(`tab-${tab}-${index}`).classList.add("border-blue-500","font-semibold");
-}
-
-function tag(text) {
-  return `<span class="inline-block bg-gray-200 px-2 py-1 m-1 rounded text-sm">${text}</span>`;
-}
-
-function tagSmall(text) {
-  return `<span class="inline-block bg-gray-100 px-2 py-1 m-1 rounded text-xs">${text}</span>`;
-}
-
-function formatDate(d) {
-  return new Date(d).toLocaleString();
-}
-
-function filterDNS(containerId, query) {
-  const container = document.getElementById(containerId);
-  const items = container.children;
-
-  for (let item of items) {
-    item.style.display = item.innerText.toLowerCase().includes(query.toLowerCase())
-      ? "block"
-      : "none";
-  }
-}
+});
