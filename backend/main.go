@@ -1,11 +1,23 @@
 // Package main implements the QuantumSentry backend API server.
 //
-// REST endpoints:
-//   GET  /scan?target=<host:port>    — single scan, persist + return CBOM
-//   POST /scan/bulk                  — scan multiple targets concurrently
-//   GET  /history                    — last 50 scans (list, no CBOM blob)
-//   GET  /history/:id                — full CBOM for one scan
-//   GET  /audit                      — last 200 audit log entries
+// It serves the frontend dashboard as static files and exposes a JWT-protected
+// REST API for PQC scanning, history retrieval, and compliance audit logging.
+//
+// Startup sequence:
+//  1. InitDB() — open/create quantumsentry.db and run schema migrations
+//  2. initUsersTable() — seed default admin/auditor/viewer accounts
+//  3. Register Gin routes (public auth routes + protected API routes)
+//  4. Listen on :8080
+//
+// Directory layout expected at runtime:
+//
+//	backend/          ← cwd when running server.exe
+//	  server.exe
+//	  quantumsentry.db  (created automatically)
+//	../scanner/
+//	  scanner.exe     ← invoked as subprocess per scan
+//	../frontend/
+//	  index.html · script.js · style.css
 package main
 
 import (
@@ -15,7 +27,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -245,6 +256,8 @@ func verdictFromMeta(meta cbomMeta) (string, string) {
 	return "vuln", "Quantum Vulnerable"
 }
 
+// safeGet returns the TLS version from the first protocol of the nth asset.
+// Returns an empty string if the index is out of bounds.
 func safeGet(assets []struct {
 	Protocols []struct {
 		Version       string `json:"version"`
@@ -257,6 +270,8 @@ func safeGet(assets []struct {
 	return ""
 }
 
+// safeGetGroup returns the selected KEM group from the first protocol of the nth asset.
+// Returns an empty string if the index is out of bounds.
 func safeGetGroup(assets []struct {
 	Protocols []struct {
 		Version       string `json:"version"`
@@ -268,5 +283,3 @@ func safeGetGroup(assets []struct {
 	}
 	return ""
 }
-
-func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
