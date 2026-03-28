@@ -66,6 +66,36 @@
       </div>
     </section>
 
+    <!-- Bulk Scan Section -->
+    <section class="bulk-box" id="bulkBox">
+      <div class="bulk-header" onclick="toggleBulk()">
+        <span>⚡ Bulk Scan <span class="bulk-badge">Multi-target</span></span>
+        <span id="bulkChevron" style="font-size:.8rem;color:var(--muted)">▼ expand</span>
+      </div>
+      <div id="bulkBody" class="hidden">
+        <p class="bulk-hint">Enter one <code>host:port</code> per line (max 20). Scans run 3 at a time.</p>
+        <textarea id="bulkTargets" class="bulk-textarea"
+          placeholder="google.com:443&#10;cloudflare.com:443&#10;github.com:443"
+          rows="5" spellcheck="false"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+          <button class="scan-btn-bulk" onclick="bulkScan()">⚡ Run Bulk Scan</button>
+          <label class="export-btn" style="cursor:pointer;" title="Upload CSV/TXT of targets">
+            📂 Upload CSV
+            <input type="file" accept=".csv,.txt" id="csvUpload" style="display:none" onchange="loadCSV(this)" />
+          </label>
+          <button class="export-btn" onclick="downloadBulkJSON()" id="bulkDownloadBtn" style="display:none">⬇ Export JSON</button>
+          <button class="export-btn" onclick="clearBulkResults()" id="clearBulkBtn" style="display:none">✕ Clear</button>
+        </div>
+        <!-- Progress -->
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-progress-bar" id="bulkProgressBar" style="width:0%"></div>
+          <span id="bulkProgressText" class="bulk-progress-text">0 / 0</span>
+        </div>
+        <!-- Results table -->
+        <div id="bulkResults"></div>
+      </div>
+    </section>
+
     <!-- Status -->
     <div id="status" class="status-bar hidden"></div>
 

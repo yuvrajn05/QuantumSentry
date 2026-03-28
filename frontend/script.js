@@ -594,6 +594,169 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+/* ── 9. Bulk Scan Functions ──────────────────────────────── */
+
+let _bulkData = null; // stored for JSON export
+
+/** Toggle the bulk scan section open/closed */
+function toggleBulk() {
+  const body    = document.getElementById('bulkBody');
+  const chevron = document.getElementById('bulkChevron');
+  const isHidden = body.classList.contains('hidden');
+  body.classList.toggle('hidden', !isHidden);
+  chevron.textContent = isHidden ? '▲ collapse' : '▼ expand';
+}
+
+/** Populate textarea from uploaded CSV/TXT file */
+function loadCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    // Accept comma-separated or newline-separated targets
+    const text = e.target.result
+      .replace(/,/g, '\n')
+      .split('\n')
+      .map(t => t.trim())
+      .filter(t => t && t.includes(':'))
+      .join('\n');
+    document.getElementById('bulkTargets').value = text;
+  };
+  reader.readAsText(file);
+}
+
+/** Run bulk scan against all targets in the textarea */
+async function bulkScan() {
+  const raw = document.getElementById('bulkTargets').value.trim();
+  if (!raw) { alert('Please enter at least one target (host:port).'); return; }
+
+  const targets = [...new Set(
+    raw.split('\n').map(t => t.trim()).filter(t => t && t.includes(':'))
+  )].slice(0, 20);
+
+  if (targets.length === 0) {
+    alert('No valid targets found. Each line should be host:port (e.g. google.com:443)');
+    return;
+  }
+
+  // Show progress
+  const prog    = document.getElementById('bulkProgress');
+  const bar     = document.getElementById('bulkProgressBar');
+  const txt     = document.getElementById('bulkProgressText');
+  const resDiv  = document.getElementById('bulkResults');
+
+  prog.classList.remove('hidden');
+  bar.style.width = '5%';
+  txt.textContent = `0 / ${targets.length}`;
+  resDiv.innerHTML = '';
+
+  document.getElementById('clearBulkBtn').style.display     = 'none';
+  document.getElementById('bulkDownloadBtn').style.display  = 'none';
+
+  try {
+    const res  = await fetch('http://localhost:8080/scan/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets }),
+    });
+    const data = await res.json();
+    _bulkData = data;
+
+    bar.style.width  = '100%';
+    txt.textContent  = `${data.total} / ${data.total}`;
+
+    renderBulkResults(data.results || []);
+
+    document.getElementById('clearBulkBtn').style.display    = 'inline-flex';
+    document.getElementById('bulkDownloadBtn').style.display = 'inline-flex';
+
+  } catch (err) {
+    resDiv.innerHTML = `<div style="color:var(--vuln);font-size:.85rem;padding:12px 0">❌ Request failed: ${err.message}</div>`;
+    bar.style.width  = '100%';
+    bar.style.background = 'var(--vuln)';
+  }
+}
+
+/** Render the bulk scan results as a summary table */
+function renderBulkResults(results) {
+  const vIcon  = { safe: '🟢', hybrid: '🟡', vuln: '🔴', error: '⚠️', unknown: '⚪' };
+  const vColor = { safe: 'var(--safe)', hybrid: '#f59e0b', vuln: 'var(--vuln)', error: '#ef4444', unknown: 'var(--muted)' };
+
+  const rows = results.map((r, i) => {
+    if (r.status === 'error') {
+      return `<tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td style="font-weight:500">${r.target}</td>
+        <td colspan="3" style="color:var(--vuln);font-size:.8rem">⚠️ ${r.error}</td>
+      </tr>`;
+    }
+    const cbom     = r.cbom || {};
+    const asset    = (cbom.assets || [])[0] || {};
+    const tls      = (asset.protocols || [])[0] || {};
+    const cert     = (asset.certificates || [])[0] || {};
+    const keys     = (asset.keys || [])[0] || {};
+
+    const verdict  = computeVerdict(tls, cert);
+    const icon     = vIcon[verdict.cls]  || vIcon.unknown;
+    const color    = vColor[verdict.cls] || vColor.unknown;
+    const kem      = tls.selected_group  || '—';
+    const tlsVer   = tls.version         || '—';
+    const keySize  = keys.size ? `${keys.size} bits` : '—';
+
+    return `<tr class="bulk-row" onclick="loadBulkDetail(${i})" title="Click to view full CBOM">
+      <td style="color:var(--muted)">${i+1}</td>
+      <td style="font-weight:600">${r.target}</td>
+      <td><span style="color:${color}">${icon} ${verdict.label}</span></td>
+      <td style="font-size:.78rem;color:var(--text)">${tlsVer} · ${kem}</td>
+      <td style="font-size:.76rem;color:var(--muted)">${keySize}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('bulkResults').innerHTML = `
+  <table class="bulk-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Target</th><th>PQC Verdict</th><th>TLS / KEM</th><th>Key Size</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <p style="font-size:.75rem;color:var(--muted);margin-top:8px">Click any row to load its full CBOM below.</p>`;
+}
+
+/** Load a bulk result's CBOM into the main result area */
+function loadBulkDetail(idx) {
+  if (!_bulkData || !_bulkData.results[idx]) return;
+  const r = _bulkData.results[idx];
+  if (r.status === 'error') return;
+  document.getElementById('target').value = r.target;
+  setStatus(`✅ Loaded bulk scan result for <b>${r.target}</b>`, 'success');
+  render(r.cbom);
+  window.scrollTo({ top: document.getElementById('result').offsetTop - 20, behavior: 'smooth' });
+}
+
+/** Download all bulk CBOM results as a single JSON file */
+function downloadBulkJSON() {
+  if (!_bulkData) return;
+  const blob = new Blob([JSON.stringify(_bulkData, null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `bulk-cbom-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/** Clear bulk results */
+function clearBulkResults() {
+  _bulkData = null;
+  document.getElementById('bulkResults').innerHTML = '';
+  document.getElementById('bulkProgress').classList.add('hidden');
+  document.getElementById('bulkProgressBar').style.width = '0%';
+  document.getElementById('clearBulkBtn').style.display    = 'none';
+  document.getElementById('bulkDownloadBtn').style.display = 'none';
+}
+
+
 /* ── 8. History & Audit Functions ───────────────────────────── */
 
 /** Toggle the history panel open/closed */

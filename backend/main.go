@@ -1,15 +1,11 @@
 // Package main implements the QuantumSentry backend API server.
 //
-// It is a lightweight Go HTTP server (powered by Gin) that serves the
-// frontend dashboard and exposes REST endpoints:
-//
-//	GET  /scan?target=<host:port>   — run a scan, persist result, return CBOM JSON
-//	GET  /history                   — list last 50 scans (newest first)
-//	GET  /history/:id               — fetch full CBOM for a specific scan
-//	GET  /audit                     — last 200 audit log entries
-//
-// Every request is recorded in the audit_log table for compliance traceability.
-// Scan results are persisted in SQLite (quantumsentry.db) for history tracking.
+// REST endpoints:
+//   GET  /scan?target=<host:port>    — single scan, persist + return CBOM
+//   POST /scan/bulk                  — scan multiple targets concurrently
+//   GET  /history                    — last 50 scans (list, no CBOM blob)
+//   GET  /history/:id                — full CBOM for one scan
+//   GET  /audit                      — last 200 audit log entries
 package main
 
 import (
@@ -18,6 +14,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -25,24 +22,18 @@ import (
 )
 
 func main() {
-	// Initialise SQLite database (creates file + tables if they don't exist).
 	InitDB()
 
 	r := gin.Default()
-
-	// Allow cross-origin requests for development.
 	r.Use(cors.Default())
 
-	// ── Audit middleware — log every API request ───────────────────────────
+	// ── Audit middleware ───────────────────────────────────────────────────
 	r.Use(func(c *gin.Context) {
-		c.Next() // process request first
-
-		// Only audit API paths (skip static files)
+		c.Next()
 		path := c.Request.URL.Path
 		if strings.HasPrefix(path, "/scan") ||
 			strings.HasPrefix(path, "/history") ||
 			strings.HasPrefix(path, "/audit") {
-
 			status := "OK"
 			if c.Writer.Status() >= 400 {
 				status = "ERROR"
@@ -51,86 +42,96 @@ func main() {
 			if target == "" {
 				target = c.Param("id")
 			}
-			LogAudit(
-				strings.ToUpper(strings.TrimPrefix(path, "/")),
-				target,
-				status,
-				"",
-			)
+			LogAudit(strings.ToUpper(strings.TrimPrefix(path, "/")), target, status, "")
 		}
 	})
 
-	// ── Static frontend routes ────────────────────────────────────────────
-	r.GET("/", func(c *gin.Context) {
-		c.File("../frontend/index.html")
-	})
-	r.GET("/script.js", func(c *gin.Context) {
-		c.File("../frontend/script.js")
-	})
-	r.GET("/style.css", func(c *gin.Context) {
-		c.File("../frontend/style.css")
-	})
+	// ── Static files ───────────────────────────────────────────────────────
+	r.GET("/", func(c *gin.Context) { c.File("../frontend/index.html") })
+	r.GET("/script.js", func(c *gin.Context) { c.File("../frontend/script.js") })
+	r.GET("/style.css", func(c *gin.Context) { c.File("../frontend/style.css") })
 
-	// ── GET /scan?target=<host:port> ──────────────────────────────────────
-	// Runs the scanner, saves the result to the DB, and returns CBOM JSON.
+	// ── GET /scan?target=<host:port> ───────────────────────────────────────
 	r.GET("/scan", func(c *gin.Context) {
 		target := c.Query("target")
 		if target == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "target query param required (e.g. ?target=google.com:443)",
-			})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target query param required"})
 			return
 		}
-
-		// Invoke scanner binary as a subprocess.
-		cmd := exec.Command("../scanner/scanner.exe", target)
-		var out, stderr bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":  err.Error(),
-				"stderr": stderr.String(),
-			})
+		cbomBytes, err := runScan(target)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-
-		cbomBytes := out.Bytes()
-
-		// Parse just enough of the CBOM to extract fields for DB storage.
-		var cbom struct {
-			ScanID    string `json:"scan_id"`
-			Timestamp string `json:"timestamp"`
-			Assets    []struct {
-				Protocols []struct {
-					Version       string `json:"version"`
-					SelectedGroup string `json:"selected_group"`
-				} `json:"protocols"`
-			} `json:"assets"`
-		}
-		if err := json.Unmarshal(cbomBytes, &cbom); err == nil && cbom.ScanID != "" {
-			// Compute verdict by inspecting the selected KEM group.
-			verdict, verdictLabel := computeVerdict(cbom)
-
-			_ = SaveScan(ScanRecord{
-				ID:            cbom.ScanID,
-				Timestamp:     cbom.Timestamp,
-				Target:        target,
-				Verdict:       verdict,
-				VerdictLabel:  verdictLabel,
-				TLSVersion:    safeGet(cbom.Assets, 0),
-				SelectedGroup: safeGetGroup(cbom.Assets, 0),
-				CBOMJson:      string(cbomBytes),
-			})
-		}
-
-		// Return raw CBOM to frontend.
+		persistScan(target, cbomBytes)
 		c.Data(http.StatusOK, "application/json", cbomBytes)
 	})
 
-	// ── GET /history ──────────────────────────────────────────────────────
-	// Returns the last 50 scans (without full CBOM JSON for performance).
+	// ── POST /scan/bulk ────────────────────────────────────────────────────
+	// Body: { "targets": ["google.com:443", "cloudflare.com:443", ...] }
+	// Runs up to 3 scans concurrently; returns array of CBOM results.
+	r.POST("/scan/bulk", func(c *gin.Context) {
+		var req struct {
+			Targets []string `json:"targets"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || len(req.Targets) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "body must be {\"targets\":[\"host:port\",...]}"})
+			return
+		}
+
+		// Deduplicate and cap at 20 targets per request
+		seen := map[string]bool{}
+		var targets []string
+		for _, t := range req.Targets {
+			t = strings.TrimSpace(t)
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			targets = append(targets, t)
+			if len(targets) >= 20 {
+				break
+			}
+		}
+
+		type Result struct {
+			Target string          `json:"target"`
+			Status string          `json:"status"` // "ok" | "error"
+			Error  string          `json:"error,omitempty"`
+			CBOM   json.RawMessage `json:"cbom,omitempty"`
+		}
+
+		results := make([]Result, len(targets))
+
+		// Semaphore to cap concurrency at 3 simultaneous scans
+		sem := make(chan struct{}, 3)
+		var wg sync.WaitGroup
+
+		for i, target := range targets {
+			wg.Add(1)
+			go func(idx int, tgt string) {
+				defer wg.Done()
+				sem <- struct{}{}        // acquire
+				defer func() { <-sem }() // release
+
+				cbomBytes, err := runScan(tgt)
+				if err != nil {
+					results[idx] = Result{Target: tgt, Status: "error", Error: err.Error()}
+					return
+				}
+				persistScan(tgt, cbomBytes)
+				results[idx] = Result{Target: tgt, Status: "ok", CBOM: json.RawMessage(cbomBytes)}
+			}(i, target)
+		}
+
+		wg.Wait()
+		c.JSON(http.StatusOK, gin.H{
+			"total":   len(targets),
+			"results": results,
+		})
+	})
+
+	// ── GET /history ───────────────────────────────────────────────────────
 	r.GET("/history", func(c *gin.Context) {
 		records, err := GetHistory(50)
 		if err != nil {
@@ -143,11 +144,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"scans": records})
 	})
 
-	// ── GET /history/:id ──────────────────────────────────────────────────
-	// Returns the full CBOM JSON for a specific scan ID.
+	// ── GET /history/:id ───────────────────────────────────────────────────
 	r.GET("/history/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		rec, err := GetScanByID(id)
+		rec, err := GetScanByID(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -156,12 +155,10 @@ func main() {
 			c.JSON(http.StatusNotFound, gin.H{"error": "scan not found"})
 			return
 		}
-		// Return the raw CBOM JSON stored in the DB.
 		c.Data(http.StatusOK, "application/json", []byte(rec.CBOMJson))
 	})
 
-	// ── GET /audit ────────────────────────────────────────────────────────
-	// Returns the audit trail (last 200 entries).
+	// ── GET /audit ─────────────────────────────────────────────────────────
 	r.GET("/audit", func(c *gin.Context) {
 		entries, err := GetAuditLog(200)
 		if err != nil {
@@ -179,8 +176,20 @@ func main() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// computeVerdict derives a verdict string and label from the CBOM assets.
-func computeVerdict(cbom struct {
+// runScan invokes the scanner binary for a single target and returns its CBOM JSON.
+func runScan(target string) ([]byte, error) {
+	cmd := exec.Command("../scanner/scanner.exe", target)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// cbomMeta is the minimal CBOM shape needed for DB persistence.
+type cbomMeta struct {
 	ScanID    string `json:"scan_id"`
 	Timestamp string `json:"timestamp"`
 	Assets    []struct {
@@ -189,25 +198,40 @@ func computeVerdict(cbom struct {
 			SelectedGroup string `json:"selected_group"`
 		} `json:"protocols"`
 	} `json:"assets"`
-}) (string, string) {
-	if len(cbom.Assets) == 0 || len(cbom.Assets[0].Protocols) == 0 {
+}
+
+// persistScan parses the CBOM bytes and saves a record to SQLite.
+func persistScan(target string, cbomBytes []byte) {
+	var meta cbomMeta
+	if err := json.Unmarshal(cbomBytes, &meta); err != nil || meta.ScanID == "" {
+		return
+	}
+	verdict, label := verdictFromMeta(meta)
+	_ = SaveScan(ScanRecord{
+		ID:            meta.ScanID,
+		Timestamp:     meta.Timestamp,
+		Target:        target,
+		Verdict:       verdict,
+		VerdictLabel:  label,
+		TLSVersion:    safeGet(meta.Assets, 0),
+		SelectedGroup: safeGetGroup(meta.Assets, 0),
+		CBOMJson:      string(cbomBytes),
+	})
+}
+
+// verdictFromMeta determines the PQC verdict from minimal CBOM metadata.
+func verdictFromMeta(meta cbomMeta) (string, string) {
+	if len(meta.Assets) == 0 || len(meta.Assets[0].Protocols) == 0 {
 		return "unknown", "Unknown"
 	}
-
-	group := cbom.Assets[0].Protocols[0].SelectedGroup
-
+	group := meta.Assets[0].Protocols[0].SelectedGroup
 	purePQ := []string{"MLKEM512", "MLKEM768", "MLKEM1024"}
-	hybrid := []string{"X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024"}
-
+	hybrid  := []string{"X25519MLKEM768", "SecP256r1MLKEM768", "SecP384r1MLKEM1024"}
 	for _, g := range purePQ {
-		if group == g {
-			return "safe", "Post-Quantum Safe"
-		}
+		if group == g { return "safe", "Post-Quantum Safe" }
 	}
 	for _, g := range hybrid {
-		if group == g {
-			return "hybrid", "Hybrid PQ — Partially Safe"
-		}
+		if group == g { return "hybrid", "Hybrid PQ — Partially Safe" }
 	}
 	return "vuln", "Quantum Vulnerable"
 }
@@ -236,7 +260,4 @@ func safeGetGroup(assets []struct {
 	return ""
 }
 
-// nowRFC3339 returns the current UTC time in RFC3339 format.
-func nowRFC3339() string {
-	return time.Now().UTC().Format(time.RFC3339)
-}
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
