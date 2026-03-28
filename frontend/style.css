@@ -97,7 +97,8 @@ body::before {
 }
 .gradient-text {
   background: linear-gradient(135deg, var(--accent2), #a78bfa, #38bdf8);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text; -webkit-text-fill-color: transparent;
 }
 .hero-sub { color: var(--muted); max-width: 520px; margin: 0 auto; font-size: .95rem; }
 
@@ -413,5 +414,48 @@ button#scanBtn:disabled { opacity: .5; cursor: wait; }
 .bulk-table td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--text); }
 .bulk-row { cursor: pointer; transition: background .15s; }
 .bulk-row:hover { background: rgba(99,102,241,.07); }
+
+/* ─── Audit Modal ─────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(5,7,15,.75); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal-box {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 16px; width: 100%; max-width: 860px;
+  max-height: 80vh; display: flex; flex-direction: column;
+  padding: 22px 24px; box-shadow: 0 24px 80px rgba(0,0,0,.5);
+}
+.modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px; font-weight: 700; font-size: 1rem; color: var(--text);
+}
+.audit-table-wrap { overflow-y: auto; flex: 1; }
+.audit-table {
+  width: 100%; border-collapse: collapse; font-size: .8rem;
+}
+.audit-table th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  font-size: .7rem; text-transform: uppercase; letter-spacing: .06em;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--card);
+}
+.audit-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--text); vertical-align: middle; }
+.audit-table tr:hover td { background: rgba(99,102,241,.05); }
+/* Status badges */
+.audit-badge {
+  display: inline-block; font-size: .68rem; font-weight: 700;
+  letter-spacing: .05em; border-radius: 5px; padding: 2px 7px;
+}
+.audit-badge.ok  { background: rgba(16,185,129,.15); color: #10b981; }
+.audit-badge.err { background: rgba(239,68,68,.15);  color: #ef4444; }
+/* Action pill */
+.audit-action {
+  display: inline-block; font-size: .7rem; font-weight: 600;
+  background: rgba(99,102,241,.15); color: var(--accent2);
+  border-radius: 5px; padding: 2px 7px; white-space: nowrap;
+}
 
 

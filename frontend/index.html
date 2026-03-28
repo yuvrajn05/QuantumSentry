@@ -116,5 +116,23 @@
   </main>
 
   <script src="script.js"></script>
+
+  <!-- Audit Log Modal -->
+  <div id="auditModal" class="modal-overlay hidden" onclick="closeAudit(event)">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span>📋 Audit Trail</span>
+        <div style="display:flex;gap:8px;">
+          <button class="export-btn" onclick="downloadAuditCSV()" title="Export audit log as CSV">⬇ CSV</button>
+          <button class="export-btn" onclick="closeAuditBtn()" style="color:#ef4444">✕ Close</button>
+        </div>
+      </div>
+      <p style="font-size:.78rem;color:var(--muted);margin:0 0 12px">All API actions are automatically logged for compliance traceability.</p>
+      <div id="auditTableWrap" class="audit-table-wrap">
+        <span style="color:var(--muted);font-size:.85rem">Loading…</span>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

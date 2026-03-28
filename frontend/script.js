@@ -823,7 +823,87 @@ async function loadHistoryScan(id, target) {
   }
 }
 
-/** Open audit trail in a new tab (returns JSON) */
-function openAudit() {
-  window.open('http://localhost:8080/audit', '_blank');
+/** Open audit trail modal and load entries */
+async function openAudit() {
+  document.getElementById('auditModal').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  await loadAudit();
+}
+
+/** Close audit modal by clicking the overlay */
+function closeAudit(e) {
+  if (e.target.id === 'auditModal') closeAuditBtn();
+}
+function closeAuditBtn() {
+  document.getElementById('auditModal').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+/** Fetch and render the audit log table */
+async function loadAudit() {
+  const wrap = document.getElementById('auditTableWrap');
+  wrap.innerHTML = '<span style="color:var(--muted);font-size:.85rem">Loading…</span>';
+
+  let entries = [];
+  try {
+    const data = await fetch('http://localhost:8080/audit').then(r => r.json());
+    entries = data.entries || [];
+  } catch (err) {
+    wrap.innerHTML = `<span style="color:var(--vuln);font-size:.85rem">❌ ${err.message}</span>`;
+    return;
+  }
+
+  if (entries.length === 0) {
+    wrap.innerHTML = '<span style="color:var(--muted);font-size:.85rem">No audit entries yet.</span>';
+    return;
+  }
+
+  const statusBadge = s =>
+    s === 'OK'
+      ? `<span class="audit-badge ok">OK</span>`
+      : `<span class="audit-badge err">ERROR</span>`;
+
+  const rows = entries.map(e => `
+    <tr>
+      <td style="color:var(--muted);font-size:.72rem;white-space:nowrap">${new Date(e.timestamp).toLocaleString('en-GB',{dateStyle:'short',timeStyle:'medium'})}</td>
+      <td><span class="audit-action">${e.action}</span></td>
+      <td style="font-size:.8rem;color:var(--text);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.target}">${e.target || '—'}</td>
+      <td>${statusBadge(e.status)}</td>
+      <td style="font-size:.75rem;color:var(--muted)">${e.detail || ''}</td>
+    </tr>`).join('');
+
+  wrap.innerHTML = `
+  <table class="audit-table">
+    <thead>
+      <tr>
+        <th>Timestamp</th><th>Action</th><th>Target</th><th>Status</th><th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+
+  // store for CSV export
+  window._auditEntries = entries;
+}
+
+/** Export audit log as CSV download */
+function downloadAuditCSV() {
+  const entries = window._auditEntries || [];
+  if (!entries.length) return;
+
+  const header = 'ID,Timestamp,Action,Target,Status,Detail';
+  const csvRows = entries.map(e =>
+    [e.id, e.timestamp, e.action,
+     `"${(e.target||'').replace(/"/g,'""')}"`,
+     e.status,
+     `"${(e.detail||'').replace(/"/g,'""')}"`
+    ].join(',')
+  );
+
+  const blob = new Blob([[header, ...csvRows].join('\n')], { type: 'text/csv' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `audit-log-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
