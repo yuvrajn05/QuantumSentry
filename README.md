@@ -35,8 +35,35 @@
 - [Data Sources & Transparency](#-data-sources--transparency)
 - [Troubleshooting](#-troubleshooting)
 - [Roadmap](#-roadmap)
+- [Changelog](#-changelog)
 
 ---
+
+## 📝 Changelog
+
+### v1.1.0 — 2026-03-30 · Final Hackathon Build
+
+#### 🐛 Bug Fixes
+
+| Fix | Root Cause | Resolution |
+|---|---|---|
+| **Export JSON button silently broken** | `JSON.stringify()` output embedded directly in `onclick="..."` — double-quotes broke the HTML attribute | Replaced with module-level `_cbomCache`; `exportCBOMJSON()` reads from cache |
+| **CBOM modal: ~10 fields shown, 30+ empty** | Frontend read wrong JSON paths: `asset.algorithms` (should be `proto.algorithms`), `asset.source_ip` (should be `asset.network.source_ip`), `cert.not_before` (should be `cert.valid_from`), `proto.server_groups` (should be `proto.supported_groups`), etc. | All 7 field path mismatches corrected in both modal renderer and PDF generator |
+| **Cipher Suite names truncated/overlapping** | Fixed `width:200px` label + JS 30-char hard slice clashed with names like `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384` | Switched to two-row stacked layout (name on top, bar+count below); removed JS truncation |
+| **PDF generator had same wrong field paths** | `downloadCBOMPDF()` copied same incorrect field references | Fixed in sync with modal |
+
+#### ✨ Enhancements
+
+| Feature | Details |
+|---|---|
+| **CBOM modal — all 7 Annexure A sections** | Scan Metadata · PQC Verdict + HNDL explanation · Network Endpoint · TLS Protocols (with `supported_groups` chips) · Algorithms (primitive/mode/OID per entry) · X.509 Certificate (12 fields + live expiry countdown) · Cryptographic Keys (7 fields) |
+| **CBOM PDF Download** | New `📄 Download PDF` button — branded A4 PDF per asset with coloured verdict banner, 8 content sections, contextual remediation recommendations, PNB red footer + page count |
+| **Certificate expiry countdown** | Valid To field shows coloured badge: 🔴 ≤30d · 🟡 ≤90d · 🟢 >90d |
+| **Extended cert fields** | Added: Is CA, DNS Names (first 5), Key Usage, Extended Key Usage |
+
+---
+
+
 
 ## 🔍 Overview
 
@@ -508,15 +535,38 @@ The Asset Discovery tabs display a clearly labelled **"Demo Discovery Dataset"**
 
 ## 🗺️ Roadmap
 
-| Priority | Item | Status |
-|---|---|---|
-| 🔴 High | HTTPS / TLS on the server itself | Planned |
-| 🔴 High | SMTP delivery for scheduled reports | Planned |
-| 🟡 Medium | Background cron job for daily auto-scans | Planned |
-| 🟡 Medium | Shodan / passive DNS API integration for live discovery | Planned |
-| 🟡 Medium | Real-time scan progress via WebSocket | Planned |
-| 🟢 Low | Multi-tenant / organisation support | Future |
-| 🟢 Low | SAML/SSO integration | Future |
+### ✅ Completed (v1.1.0)
+| Item | Notes |
+|---|---|
+| Full CBOM modal (all 7 Annexure A sections) | All scanner JSON fields correctly mapped |
+| CBOM PDF Download per asset | Branded, multi-page, with recommendations |
+| Export JSON fix | Module-level cache replaces broken inline onclick |
+| Cipher suite label layout | Two-row stacked — no truncation |
+| Certificate expiry countdown badge | Colour-coded 30/90 day warnings |
+
+### 🔜 Phase 1 — Production Hardening (Q2 2026)
+| Priority | Item |
+|---|---|
+| 🔴 High | HTTPS / TLS on the server (Let's Encrypt or internal CA) |
+| 🔴 High | Docker + docker-compose deployment |
+| 🔴 High | SMTP delivery for scheduled PDF reports |
+| 🟡 Medium | Fix N+1 query in `/cbom/summary` (pre-aggregation table) |
+| 🟡 Medium | Background cron goroutine for daily auto-scans |
+
+### 🔜 Phase 2 — Intelligence Layer (Q3 2026)
+| Priority | Item |
+|---|---|
+| 🟡 Medium | Shodan API + Certificate Transparency passive discovery |
+| 🟡 Medium | Delta alerting (notify when verdict degrades) |
+| 🟡 Medium | Real-time scan progress via WebSocket |
+
+### 🔜 Phase 3 — Enterprise Integration (Q4 2026)
+| Priority | Item |
+|---|---|
+| 🟢 Low | PostgreSQL migration (drop-in via `database/sql`) |
+| 🟢 Low | SAML/SSO (Active Directory) |
+| 🟢 Low | SIEM export (Splunk/QRadar via syslog/CEF) |
+| 🟢 Low | OpenAPI 3.0 documentation |
 
 ---
 

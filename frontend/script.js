@@ -516,73 +516,378 @@ async function openCBOMModal(id, target) {
   title.textContent = `CBOM — ${target}`;
   body.innerHTML = '<p style="color:#888;padding:20px;">Loading…</p>';
   modal.classList.remove('hidden');
+  _cbomCache = null; // clear previous
   try {
     const cbomRaw = await api('GET', `/history/${encodeURIComponent(id)}`);
+    _cbomCache = cbomRaw; // store for export button
     body.innerHTML = renderCBOMDetail(cbomRaw, target);
   } catch (e) {
     body.innerHTML = `<p style="color:#991B1B">Error: ${e.message}</p>`;
   }
 }
 
+// ── Comprehensive CBOM detail renderer — all Annexure A fields ────────────
 function renderCBOMDetail(cbom, target) {
-  const asset = (cbom.assets || [])[0] || {};
-  const proto = (asset.protocols || [])[0] || {};
-  const cert  = (asset.certificates || [])[0] || {};
-  const meta  = cbom.metadata || {};
-  const pqc   = cbom.pqc_verdict || {};
+  const asset     = (cbom.assets || [])[0] || {};
+  const net       = asset.network      || {};       // source_ip, dest_ip, sni live here
+  const allProtos = asset.protocols    || [];
+  const proto     = allProtos[0]       || {};
+  const cert      = (asset.certificates || [])[0] || {};
+  const algos     = proto.algorithms   || [];       // algorithms are on the protocol, not the asset
+  const keys      = asset.keys         || [];
+  // ScanRun has no .metadata object — fields are directly on root
+  const pqc       = cbom.pqc_verdict   || {};
+
+  // Helper: key-value row
+  const kv = (k, v) => {
+    const val = (v !== undefined && v !== null && v !== '') ? esc(String(v)) : '<span style="opacity:.4">—</span>';
+    return `<span class="cbom-key">${esc(k)}</span><span class="cbom-val">${val}</span>`;
+  };
+
+  // Helper: array as purple chips
+  const chips = (arr) => (arr && arr.length)
+    ? arr.map(v => `<span style="background:#EDE9FE;color:#6D28D9;border-radius:4px;padding:1px 7px;font-size:11px;margin:2px;display:inline-block;">${esc(v)}</span>`).join('')
+    : '<span style="opacity:.4">—</span>';
+
+  // Verdict colour
+  const vColor = pqc.verdict === 'safe' ? '#16A34A' : pqc.verdict === 'hybrid' ? '#D97706' : '#DC2626';
+  const vIcon  = pqc.verdict === 'safe' ? '🟢' : pqc.verdict === 'hybrid' ? '🟡' : '🔴';
+
+  // Days-remaining badge
+  let daysLeft = '';
+  if (cert.valid_to) {
+    const d   = Math.round((new Date(cert.valid_to) - Date.now()) / 86400000);
+    const col = d <= 30 ? '#DC2626' : d <= 90 ? '#D97706' : '#16A34A';
+    daysLeft  = `<span style="color:${col};font-weight:700;margin-left:6px;">(${d > 0 ? d + 'd remaining' : 'EXPIRED'})</span>`;
+  }
+
+  // Protocols section — all negotiated protocols
+  const protoHTML = allProtos.length ? allProtos.map((p, i) => `
+    <div style="background:#F8F5EE;border-radius:6px;padding:8px 12px;margin-top:8px;">
+      <div style="font-weight:700;font-size:12px;color:#7B0000;margin-bottom:5px;">Protocol ${i+1} — ${esc(p.name||'TLS')} ${esc(p.version||'')}</div>
+      <div class="cbom-kv" style="font-size:12px;">
+        ${kv('Cipher Suite', p.cipher_suite)} ${kv('Selected Group', p.selected_group || p.kem_group)} ${kv('OID', p.oid)}
+      </div>
+      <div style="margin-top:5px;font-size:12px;display:flex;align-items:flex-start;gap:6px;flex-wrap:wrap;">
+        <span class="cbom-key">Supported Groups</span>${chips(p.supported_groups)}
+      </div>
+    </div>`).join('') : '<div style="opacity:.5;font-size:13px;padding:6px 0;">No protocol records in CBOM.</div>';
+
+  // Algorithms section
+  const algoHTML = algos.length ? algos.map((a, i) => `
+    <div style="background:#F8F5EE;border-radius:6px;padding:8px 12px;margin-top:8px;">
+      <div style="font-weight:700;font-size:12px;color:#7B0000;margin-bottom:5px;">Algorithm ${i+1} — ${esc(a.name||'—')}</div>
+      <div class="cbom-kv" style="font-size:12px;">
+        ${kv('Primitive', a.primitive)} ${kv('Mode', a.mode)} ${kv('OID', a.oid)}
+      </div>
+    </div>`).join('') : '<div style="opacity:.5;font-size:13px;padding:6px 0;">No algorithm records in CBOM.</div>';
+
+  // Keys section
+  const keyHTML = keys.length ? keys.map((k, i) => `
+    <div style="background:#F8F5EE;border-radius:6px;padding:8px 12px;margin-top:8px;">
+      <div style="font-weight:700;font-size:12px;color:#7B0000;margin-bottom:5px;">Key ${i+1} — ${esc(k.name||k.id||'—')}</div>
+      <div class="cbom-kv" style="font-size:12px;">
+        ${kv('Algorithm', k.algorithm)} ${kv('Size', k.size ? k.size + ' bits' : '')} ${kv('State', k.state)}
+        ${kv('Key ID', k.id)} ${kv('Created', k.creation_date)} ${kv('Activated', k.activation_date)}
+      </div>
+    </div>`).join('') : '<div style="opacity:.5;font-size:13px;padding:6px 0;">No key records in CBOM.</div>';
 
   return `
+  <!-- Section 1: Scan Metadata -->
   <div class="cbom-section">
     <h4>📋 Scan Metadata</h4>
     <div class="cbom-kv">
-      <span class="cbom-key">Target</span><span class="cbom-val">${esc(target)}</span>
-      <span class="cbom-key">Scan ID</span><span class="cbom-val">${esc(cbom.bom_ref || cbom.scan_id || '—')}</span>
-      <span class="cbom-key">Timestamp</span><span class="cbom-val">${esc(cbom.metadata?.timestamp || '—')}</span>
-      <span class="cbom-key">Compliance</span><span class="cbom-val">${esc(meta.compliance_framework || '—')}</span>
+      ${kv('Scan ID',    cbom.scan_id)}
+      ${kv('Target',     cbom.target || target)}
+      ${kv('Timestamp', cbom.timestamp)}
+      ${kv('Compliance', 'CERT-In SRS Annexure A (PSB Hackathon 2026 SRS)')}
     </div>
   </div>
+
+  <!-- Section 2: PQC Verdict -->
   <div class="cbom-section">
     <h4>🔐 PQC Verdict</h4>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;padding:10px;background:#F8F5EE;border-radius:8px;">
+      <span style="font-size:28px;">${vIcon}</span>
+      <span style="font-size:17px;font-weight:800;color:${vColor};">${esc(pqc.label || pqc.verdict || '—')}</span>
+    </div>
     <div class="cbom-kv">
-      <span class="cbom-key">Verdict</span><span class="cbom-val"><strong>${esc(pqc.label || pqc.verdict || '—')}</strong></span>
-      <span class="cbom-key">PQ Secrecy</span><span class="cbom-val">${pqc.pq_secrecy ? '✅ Yes' : '❌ No'}</span>
-      <span class="cbom-key">PQ Auth</span><span class="cbom-val">${pqc.pq_auth    ? '✅ Yes' : '❌ No'}</span>
+      ${kv('Raw Verdict', pqc.verdict)}
+      <span class="cbom-key">PQ Forward Secrecy</span>
+      <span class="cbom-val">${pqc.pq_secrecy ? '✅ Yes — Protected against HNDL attacks' : '❌ No — Vulnerable to Harvest Now Decrypt Later'}</span>
+      <span class="cbom-key">PQ Authentication</span>
+      <span class="cbom-val">${pqc.pq_auth ? '✅ Yes — Post-Quantum Auth' : '❌ No — Classical signature (ECDSA/RSA) — quantum-forgeable'}</span>
     </div>
   </div>
+
+  <!-- Section 3: Network Endpoint -->
   <div class="cbom-section">
-    <h4>🌐 Network / TLS</h4>
+    <h4>🌐 Network Endpoint</h4>
     <div class="cbom-kv">
-      <span class="cbom-key">TLS Version</span><span class="cbom-val">${esc(proto.version || '—')}</span>
-      <span class="cbom-key">Cipher Suite</span><span class="cbom-val">${esc(proto.cipher_suite || '—')}</span>
-      <span class="cbom-key">KEM Group</span><span class="cbom-val">${esc(proto.selected_group || proto.kem_group || '—')}</span>
+      ${kv('Host',           asset.host)}
+      ${kv('Source IP',      net.source_ip)}
+      ${kv('Destination IP', net.destination_ip)}
+      ${kv('SNI',            net.sni)}
+      ${kv('ALPN',           proto.alpn)}
     </div>
   </div>
+
+  <!-- Section 4: TLS Protocols -->
   <div class="cbom-section">
-    <h4>🔒 Certificate</h4>
+    <h4>🔗 TLS Protocol Details</h4>
+    ${protoHTML}
+  </div>
+
+  <!-- Section 5: Algorithms -->
+  <div class="cbom-section">
+    <h4>⚙️ Cryptographic Algorithms</h4>
+    ${algoHTML}
+  </div>
+
+  <!-- Section 6: Certificate -->
+  <div class="cbom-section">
+    <h4>🔒 X.509 Certificate</h4>
     <div class="cbom-kv">
-      <span class="cbom-key">Subject</span><span class="cbom-val">${esc(cert.subject || '—')}</span>
-      <span class="cbom-key">Issuer</span><span class="cbom-val">${esc(cert.issuer  || '—')}</span>
-      <span class="cbom-key">Valid To</span><span class="cbom-val">${esc(cert.valid_to || '—')}</span>
-      <span class="cbom-key">Key Alg</span><span class="cbom-val">${esc(cert.public_key_algorithm || '—')}</span>
-      <span class="cbom-key">Key Size</span><span class="cbom-val">${cert.public_key_size ? cert.public_key_size + ' bits' : '—'}</span>
+      ${kv('Subject (CN)',          cert.subject)}
+      ${kv('Issuer',               cert.issuer)}
+      ${kv('Serial Number',        cert.serial_number)}
+      ${kv('Valid From',           cert.valid_from)}
+      <span class="cbom-key">Valid To (Expiry)</span><span class="cbom-val">${esc(cert.valid_to||'—')}${daysLeft}</span>
+      ${kv('Signature Algorithm',  cert.signature_algorithm)}
+      ${kv('Sig Algorithm OID',    cert.signature_algorithm_ref)}
+      ${kv('Public Key Algorithm', cert.public_key_algorithm)}
+      ${kv('Public Key Size',      cert.public_key_size ? cert.public_key_size + ' bits' : '')}
+      ${kv('Is CA Certificate',    cert.is_ca ? 'Yes' : 'No')}
+      ${kv('DNS Names',            (cert.dns_names||[]).slice(0,5).join(', '))}
+      ${kv('Key Usage',            (cert.key_usage||[]).join(', '))}
+      ${kv('Extended Key Usage',   (cert.ext_key_usage||[]).join(', '))}
+      ${kv('Certificate Format',   cert.certificate_format)}
+      ${kv('File Extension',       cert.certificate_extension)}
     </div>
   </div>
-  <div style="text-align:right;margin-top:12px;">
-    <button class="btn-primary" onclick="exportCBOMJSON(${JSON.stringify(JSON.stringify(cbom))})">📥 Export JSON</button>
+
+  <!-- Section 7: Keys -->
+  <div class="cbom-section">
+    <h4>🗝️ Cryptographic Keys</h4>
+    ${keyHTML}
+  </div>
+
+  <!-- Action Buttons -->
+  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap;">
+    <button onclick="exportCBOMJSON()"
+      style="background:#F1F5F9;border:1px solid #CBD5E1;color:#1E293B;padding:9px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+      📥 Export JSON
+    </button>
+    <button onclick="downloadCBOMPDF()"
+      style="background:#7B0000;border:none;color:#fff;padding:9px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
+      📄 Download PDF
+    </button>
   </div>`;
+}
+
+// ── CBOM cache (shared by JSON export + PDF download) ──────────────────────
+let _cbomCache = null;
+
+// ── Export CBOM as pretty-printed JSON ─────────────────────────────────────
+function exportCBOMJSON() {
+  if (!_cbomCache) return;
+  const blob = new Blob([JSON.stringify(_cbomCache, null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `cbom_${(_cbomCache.scan_id || _cbomCache.bom_ref || 'export').replace(/[^a-z0-9._-]/gi, '_')}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ── Download individual asset CBOM as a branded multi-page PDF ─────────────
+function downloadCBOMPDF() {
+  if (!_cbomCache || !window.jspdf) { alert('PDF library not loaded yet — try again in a moment.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc  = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W    = 210;
+  let   y    = 0;
+
+  const cbom  = _cbomCache;
+  const asset = (cbom.assets || [])[0] || {};
+  const net   = asset.network         || {}; // source_ip, dest_ip, sni
+  const proto = (asset.protocols      || [])[0] || {};
+  const cert  = (asset.certificates   || [])[0] || {};
+  const algos = proto.algorithms      || []; // algorithms live on proto
+  const keys  = asset.keys            || [];
+  const pqc   = cbom.pqc_verdict      || {};
+
+  // Header band
+  doc.setFillColor(123, 0, 0);
+  doc.rect(0, 0, W, 38, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(20); doc.setFont('helvetica', 'bold');
+  doc.text('QuantumSentry', 14, 14);
+  doc.setFontSize(10); doc.setFont('helvetica', 'normal');
+  doc.text('Cryptographic Bill of Materials — CERT-In SRS Annexure A', 14, 22);
+  doc.setFontSize(8.5);
+  doc.text(`Asset: ${(asset.host||'') + (asset.port ? ':'+asset.port : '')}`, 14, 30);
+  doc.text(`Generated: ${new Date().toLocaleString('en-IN')}`, W - 14, 30, { align: 'right' });
+  doc.setTextColor(0, 0, 0);
+  y = 48;
+
+  // Section header helper
+  const section = (title) => {
+    if (y > 260) { doc.addPage(); y = 18; }
+    doc.setFillColor(212, 146, 14);
+    doc.rect(14, y - 2, W - 28, 0.5, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5);
+    doc.setTextColor(60, 20, 0);
+    doc.text(title, 14, y + 4); y += 11;
+    doc.setTextColor(0, 0, 0);
+  };
+
+  // Row helper
+  const row = (k, v) => {
+    if (!v || v === '—') return;
+    if (y > 272) { doc.addPage(); y = 18; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+    doc.text(String(k) + ':', 16, y);
+    doc.setFont('helvetica', 'normal');
+    const lines = doc.splitTextToSize(String(v), W - 82);
+    doc.text(lines, 72, y);
+    y += Math.max(5.5, lines.length * 5.2);
+  };
+
+  // Verdict banner
+  const vRGB = pqc.verdict === 'safe' ? [22,163,74] : pqc.verdict === 'hybrid' ? [217,119,6] : [220,38,38];
+  doc.setFillColor(...vRGB);
+  doc.roundedRect(14, y, W - 28, 14, 3, 3, 'F');
+  doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(11.5);
+  doc.text(`PQC Verdict: ${pqc.label || pqc.verdict || '—'}`, W/2, y + 9, { align: 'center' });
+  doc.setTextColor(0,0,0); y += 20;
+
+  // 1. Scan Metadata
+  section('1. Scan Metadata');
+  row('Scan ID',    cbom.scan_id);
+  row('Target',     cbom.target);
+  row('Timestamp',  cbom.timestamp);
+  row('Compliance', 'CERT-In SRS Annexure A');
+  y += 3;
+
+  // 2. Network Endpoint
+  section('2. Network Endpoint');
+  row('Host',           asset.host);
+  row('Source IP',      net.source_ip);
+  row('Destination IP', net.destination_ip);
+  row('SNI',            net.sni);
+  row('ALPN',           proto.alpn);
+  y += 3;
+
+  // 3. TLS Protocol
+  section('3. TLS Protocol');
+  row('Version',          proto.version);
+  row('Cipher Suite',     proto.cipher_suite);
+  row('Selected Group',   proto.selected_group);
+  row('Supported Groups', (proto.supported_groups || []).join(', '));
+  row('Protocol OID',     proto.oid);
+  row('ALPN',             proto.alpn);
+  y += 3;
+
+  // 4. PQC Analysis
+  section('4. PQC Analysis');
+  row('Verdict',            pqc.label || pqc.verdict);
+  row('PQ Forward Secrecy', pqc.pq_secrecy ? 'Yes — Protected against HNDL attacks' : 'No — Vulnerable to Harvest Now Decrypt Later');
+  row('PQ Authentication',  pqc.pq_auth    ? 'Yes — Post-Quantum Auth' : 'No — Classical signature, quantum-forgeable by CRQC');
+  y += 3;
+
+  // 5. Certificate
+  section('5. X.509 Certificate');
+  row('Subject',             cert.subject);
+  row('Issuer',              cert.issuer);
+  row('Serial Number',       cert.serial_number);
+  row('Valid From',          cert.valid_from);
+  row('Valid To',            cert.valid_to);
+  if (cert.valid_to) {
+    const dl = Math.round((new Date(cert.valid_to) - Date.now()) / 86400000);
+    row('Days Remaining', dl > 0 ? dl + ' days' : 'EXPIRED');
+  }
+  row('Signature Algorithm', cert.signature_algorithm);
+  row('Sig Algorithm OID',   cert.signature_algorithm_ref);
+  row('Public Key Algorithm',cert.public_key_algorithm);
+  row('Public Key Size',     cert.public_key_size ? cert.public_key_size + ' bits' : '');
+  row('Certificate Format',  cert.certificate_format);
+  row('File Extension',      cert.certificate_extension);
+  y += 3;
+
+  // 6. Algorithms
+  if (algos.length) {
+    section('6. Cryptographic Algorithms');
+    algos.forEach((a, i) => {
+      if (y > 272) { doc.addPage(); y = 18; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text(`Algorithm ${i+1}: ${a.name||'—'}`, 16, y); y += 5;
+      row('  Primitive', a.primitive);
+      row('  Mode',      a.mode);
+      row('  OID',       a.oid);
+    });
+    y += 3;
+  }
+
+  // 7. Keys
+  if (keys.length) {
+    section('7. Cryptographic Keys');
+    keys.forEach((k, i) => {
+      if (y > 272) { doc.addPage(); y = 18; }
+      doc.setFont('helvetica','bold'); doc.setFontSize(9);
+      doc.text(`Key ${i+1}: ${k.name||k.id||'—'}`, 16, y); y += 5;
+      row('  Algorithm',  k.algorithm);
+      row('  Size',       k.size ? k.size + ' bits' : '');
+      row('  State',      k.state);
+      row('  Key ID',     k.id);
+      row('  Created',    k.creation_date);
+      row('  Activated',  k.activation_date);
+    });
+    y += 3;
+  }
+
+  // 8. Recommendations
+  section('8. Remediation Recommendations');
+  const recs = pqc.verdict === 'safe'
+    ? ['Asset is Post-Quantum Safe. Maintain ML-KEM configuration and revalidate periodically per NIST SP 800-208.']
+    : pqc.verdict === 'hybrid'
+    ? [
+        '1. Hybrid KEM (X25519MLKEM768) provides HNDL protection today — maintain this configuration.',
+        '2. Plan upgrade to pure ML-KEM-768 (FIPS 203) once CA support is available.',
+        '3. Request ML-DSA (FIPS 204) signed certificate to achieve full PQ Authentication.',
+        '4. Refer to NIST SP 800-208 for phased migration timeline guidance.',
+      ]
+    : [
+        '1. CRITICAL: Enable TLS 1.3 immediately — disable TLS 1.2/1.1/1.0.',
+        '2. Configure X25519MLKEM768 as preferred key exchange group (hybrid KEM).',
+        '3. Upgrade to OpenSSL 3.5+ or BoringSSL to support ML-KEM key exchange.',
+        '4. Replace classical ECDH — current sessions are retroactively decryptable by CRQC.',
+        '5. Renew certificate with key size ≥ 3072-bit RSA or P-384 ECDSA minimum.',
+        '6. Execute PQC Migration Plan per NIST SP 800-208 guidance immediately.',
+      ];
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  recs.forEach(r => {
+    if (y > 272) { doc.addPage(); y = 18; }
+    const lines = doc.splitTextToSize(r, W - 32);
+    doc.text(lines, 16, y);
+    y += lines.length * 5.5 + 1;
+  });
+
+  // Footer on every page
+  const pages = doc.getNumberOfPages();
+  for (let p = 1; p <= pages; p++) {
+    doc.setPage(p);
+    doc.setFillColor(123, 0, 0);
+    doc.rect(0, 282, W, 15, 'F');
+    doc.setTextColor(255,255,255); doc.setFontSize(8); doc.setFont('helvetica','normal');
+    doc.text(`QuantumSentry · CERT-In Annexure A CBOM · CONFIDENTIAL · Page ${p} of ${pages}`, W/2, 290, { align: 'center' });
+  }
+
+  doc.save(`CBOM_${(cbom.scan_id || cbom.bom_ref || 'report').replace(/[^a-z0-9._-]/gi,'_')}.pdf`);
 }
 
 function closeCBOMModal(e) {
   if (!e || e.target === document.getElementById('cbomModal'))
     document.getElementById('cbomModal').classList.add('hidden');
-}
-
-function exportCBOMJSON(jsonStr) {
-  const blob = new Blob([jsonStr], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'cbom_export.json';
-  a.click();
 }
 
 // ── PAGE: ASSET DISCOVERY (semi-mock) ────────────────────────────
@@ -920,19 +1225,42 @@ async function loadCBOM() {
   renderBarList('cbomKEMList', cbomSum.kem_groups || {});
 }
 
+/**
+ * renderBarList — Renders a sorted horizontal bar-chart list into a container.
+ * Used by the CBOM page for "Cipher Suite Usage" and "KEM Groups".
+ *
+ * Layout (two-row stacked per item):
+ *   [Full cipher/group name — no truncation]
+ *   [████████░░░░░░░░░░] 12
+ *
+ * @param {string} containerId - ID of the target DOM element
+ * @param {Object} obj         - { label: count } map, e.g. {'TLS_AES_128_GCM_SHA256': 6}
+ */
 function renderBarList(containerId, obj) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  const keys = Object.keys(obj).sort((a,b) => obj[b]-obj[a]);
+
+  const keys = Object.keys(obj).sort((a, b) => obj[b] - obj[a]);
   const max  = keys.length ? obj[keys[0]] : 1;
-  if (!keys.length) { el.innerHTML = '<div style="color:#888;font-size:13px;">No data yet — run some scans first.</div>'; return; }
-  el.innerHTML = keys.map(k =>
-    `<div class="cipher-item">
-      <span class="cipher-label" title="${esc(k)}">${esc(k.length>30 ? k.slice(0,30)+'…' : k)}</span>
-      <div class="cipher-bar-bg"><div class="cipher-bar" style="width:${Math.round(obj[k]/max*100)}%"></div></div>
-      <span class="cipher-count">${obj[k]}</span>
-    </div>`).join('');
+
+  if (!keys.length) {
+    el.innerHTML = '<div style="color:#888;font-size:13px;padding:8px 0;">No data yet — run some scans first.</div>';
+    return;
+  }
+
+  el.innerHTML = keys.map(k => {
+    const pct = Math.round(obj[k] / max * 100);
+    return `
+    <div class="cipher-item">
+      <span class="cipher-label" title="${esc(k)}">${esc(k)}</span>
+      <div class="cipher-row">
+        <div class="cipher-bar-bg"><div class="cipher-bar" style="width:${pct}%"></div></div>
+        <span class="cipher-count">${obj[k]}</span>
+      </div>
+    </div>`;
+  }).join('');
 }
+
 
 // ── PAGE: POSTURE OF PQC ─────────────────────────────────────────
 async function loadPosture() {
