@@ -1,1060 +1,1241 @@
-/* ──────────────────────────────────────────────────────────
-   QuantumSentry — Dashboard Script
-   
-   Sections:
-   0. Authentication (JWT login/logout, role-based UI)
-   1. PQC Classification Constants
-   2. PQC Verdict Engine
-   3. Recommendations Engine (new)
-   4. Export Functions (JSON + PDF)
-   5. Render Engine
-   6. Tab / UI Helpers
-   7. Scan Function
-   8. History & Audit Functions
-   9. Bulk Scan Functions
-────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   QuantumSentry — PNB PQC Readiness Platform
+   script.js  ·  Frontend SPA Controller
+   PSB Cybersecurity Hackathon 2026
+   ═══════════════════════════════════════════════════════════════════════════
 
-/* ── 0. Authentication ──────────────────────────────────────── */
+   OVERVIEW
+   ────────
+   This file implements the entire client-side logic for the QuantumSentry
+   Single-Page Application (SPA). It handles authentication, client-side
+   routing, API communication, chart rendering, and PDF generation.
 
-const TOKEN_KEY = 'qs_token';
-const USER_KEY  = 'qs_user';
+   MODULES (navigated via sidebar — no page reload)
+   ────────────────────────────────────────────────
+   1. Home          — KPI cards, geo map, posture chart, recent scans feed
+   2. Asset Inventory — Full scanned-asset table with CBOM modal drill-down
+   3. Asset Discovery — Domains/SSL/IP/Software tabs + D3 network topology
+   4. CBOM          — Aggregated Cryptographic Bill of Materials dashboards
+   5. Posture of PQC — Tier compliance bars, asset classification table
+   6. Cyber Rating  — Enterprise 0–1000 score, tier thresholds, per-asset scores
+   7. Reporting     — Executive PDF (2 pages + chart images), Scheduled, On-Demand
 
-/** Return stored JWT or null */
-function getToken() { return localStorage.getItem(TOKEN_KEY); }
+   ARCHITECTURE
+   ────────────
+   ┌─ Auth Layer ──────────────────────────────────────────────────────────┐
+   │  doLogin() / doLogout()                                               │
+   │  JWT stored in localStorage ('qs_token')                              │
+   │  Every api() call sends  Authorization: Bearer <token>                │
+   └───────────────────────────────────────────────────────────────────────┘
+   ┌─ SPA Router ──────────────────────────────────────────────────────────┐
+   │  navigate(page)  →  showPage()  →  load<PageName>()                  │
+   │  No hash routing; CSS .hidden class controls which section is visible │
+   └───────────────────────────────────────────────────────────────────────┘
+   ┌─ Data Layer ──────────────────────────────────────────────────────────┐
+   │  api(method, path, body)  — wraps fetch(), injects Bearer token       │
+   │  All dashboard data from backend REST endpoints:                      │
+   │    /stats  /cbom/summary  /posture  /cyber-rating  /history           │
+   └───────────────────────────────────────────────────────────────────────┘
+   ┌─ Chart Layer ─────────────────────────────────────────────────────────┐
+   │  makeChart(id, type, data, options)  — Chart.js v4 factory            │
+   │  Destroys and recreates on each page navigation to avoid ghost charts │
+   └───────────────────────────────────────────────────────────────────────┘
+   ┌─ Visualisations ──────────────────────────────────────────────────────┐
+   │  initGeoMap()   — SVG world map, equirectangular projection,          │
+   │                   animated bubbles, live scan counts from /history    │
+   │  initNetworkMap() — D3.js v7 force-directed topology graph            │
+   │                     (PNB Hub → domain/IP nodes, PQC colour coding)    │
+   └───────────────────────────────────────────────────────────────────────┘
+   ┌─ PDF Generation ──────────────────────────────────────────────────────┐
+   │  generateExecPDF(stats, posture, rating)                              │
+   │    Page 1: KPIs, Posture table, Recommendations, CBOM snapshot        │
+   │    Page 2: Chart.js canvas images (toDataURL → jsPDF addImage)        │
+   └───────────────────────────────────────────────────────────────────────┘
 
-/** Return stored user object {username, role} or null */
-function getUser()  {
-  try { return JSON.parse(localStorage.getItem(USER_KEY)); }
-  catch { return null; }
-}
+   DEPENDENCIES (loaded via CDN in index.html)
+   ───────────────────────────────────────────
+   - Chart.js   v4.4.0  — KPI charts, donut, bar, timeline charts
+   - D3.js      v7.9.0  — Force-directed network topology graph
+   - jsPDF      v2.5.1  — 2-page executive PDF report generation
 
-/** Add Authorization header to a fetch options object */
-function authHeaders(opts = {}) {
-  const token = getToken();
-  return {
-    ...opts,
-    headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` },
+   DATA SOURCES
+   ────────────
+   - Live data:    /stats, /history, /cbom/summary, /posture, /cyber-rating
+   - Demo data:    Discovery tabs (Domains/SSL/IP/Software) — representative
+                   passive-DNS & Shodan equivalent data clearly labelled in UI
+
+   CODING CONVENTIONS
+   ──────────────────
+   - All functions are documented with a brief comment above them
+   - Section dividers use  "// ── SECTION NAME ──────────────────────────"
+   - CHARTS{} object prevents ghost charts across page navigations
+   - esc() sanitises all user/server data before innerHTML insertion
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+'use strict';
+
+// ── Global State ─────────────────────────────────────────────────
+let TOKEN       = localStorage.getItem('qs_token') || '';
+let CURRENT_USER = null;
+let CURRENT_PAGE = 'home';
+let CHARTS      = {};   // Chart.js instances keyed by canvas id
+
+// ── API Helper ───────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
   };
+  if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (body)  opts.body = JSON.stringify(body);
+  const res  = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 }
 
-/** Authenticated fetch — injects Bearer token automatically */
-function authFetch(url, opts = {}) {
-  return fetch(url, authHeaders(opts));
-}
-
-/** Perform login — POST /auth/login */
+// ── Auth ─────────────────────────────────────────────────────────
 async function doLogin() {
-  const username = document.getElementById('loginUser').value.trim();
-  const password = document.getElementById('loginPass').value;
-  const errEl    = document.getElementById('loginError');
-  const btn      = document.getElementById('loginBtn');
-
-  if (!username || !password) {
-    showLoginError('Please enter username and password.');
-    return;
-  }
-
-  btn.disabled    = true;
-  btn.textContent = 'Signing in…';
+  const user = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  const errEl = document.getElementById('loginError');
+  const btn   = document.getElementById('loginBtn');
   errEl.classList.add('hidden');
-
+  btn.disabled = true; btn.textContent = 'Signing in…';
   try {
-    const res  = await fetch('http://localhost:8080/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      showLoginError(data.error || 'Login failed.');
-      btn.disabled = false; btn.textContent = 'Sign In';
-      return;
-    }
-
-    // Store token + user info
-    localStorage.setItem(TOKEN_KEY, data.token);
-    localStorage.setItem(USER_KEY, JSON.stringify({ username: data.username, role: data.role }));
-
-    // Hide login modal and show dashboard
-    document.getElementById('loginModal').classList.add('hidden');
-    applyRoleUI(data.role);
-    renderUserBadge(data.username, data.role);
-
-  } catch (err) {
-    showLoginError('Connection error: ' + err.message);
+    const data = await api('POST', '/auth/login', { username: user, password: pass });
+    TOKEN = data.token;
+    localStorage.setItem('qs_token', TOKEN);
+    await bootApp();
+  } catch (e) {
+    errEl.textContent = e.message || 'Login failed';
+    errEl.classList.remove('hidden');
+  } finally {
     btn.disabled = false; btn.textContent = 'Sign In';
   }
 }
+document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
-/** Show login error message */
-function showLoginError(msg) {
-  const el = document.getElementById('loginError');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-}
-
-/** Log out — clear token and reload */
 function doLogout() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-  location.reload();
+  TOKEN = ''; CURRENT_USER = null;
+  localStorage.removeItem('qs_token');
+  destroyAllCharts();
+  document.getElementById('appShell').classList.add('hidden');
+  document.getElementById('loginOverlay').classList.remove('hidden');
 }
 
-/** Render user badge + logout button in the header */
-function renderUserBadge(username, role) {
-  const roleColors = { admin: '#818cf8', auditor: '#f59e0b', viewer: '#10b981' };
-  const color = roleColors[role] || '#6b7280';
-  const badge = document.createElement('div');
-  badge.id    = 'userBadge';
-  badge.style.cssText = 'display:flex;gap:8px;align-items:center;';
-  badge.innerHTML = `
-    <span style="font-size:.78rem;color:var(--muted)">Signed in as</span>
-    <span style="font-weight:600;font-size:.82rem;color:${color}">${username}</span>
-    <span style="font-size:.65rem;background:${color}22;color:${color};padding:2px 7px;border-radius:5px;font-weight:700;text-transform:uppercase">${role}</span>
-    <button class="export-btn" onclick="doLogout()" style="color:#ef4444">Sign Out</button>`;
+async function bootApp() {
+  try {
+    CURRENT_USER = await api('GET', '/auth/me');
+  } catch {
+    doLogout(); return;
+  }
 
-  // Insert into header before the header-badge
-  const hdr = document.querySelector('.header-inner');
-  const live = hdr.querySelector('.header-badge').parentElement;
-  live.insertBefore(badge, live.querySelector('.header-badge'));
+  // Switch UI
+  document.getElementById('loginOverlay').classList.add('hidden');
+  document.getElementById('appShell').classList.remove('hidden');
+
+  // Fill header & sidebar
+  const uname = CURRENT_USER.username || 'user';
+  const role  = CURRENT_USER.role    || 'viewer';
+  document.getElementById('sidebarUser').textContent  = `👤 ${uname}  [${role}]`;
+  document.getElementById('headerUser').textContent   = `Welcome User: ${uname}`;
+  document.getElementById('headerRole').textContent   = role.toUpperCase();
+
+  // Navigate to home
+  navigate('home');
 }
 
-/** Apply role-based UI restrictions */
-function applyRoleUI(role) {
-  if (role === 'auditor') {
-    // Auditor cannot trigger scans
-    const scanBtn = document.getElementById('scanBtn');
-    if (scanBtn) { scanBtn.disabled = true; scanBtn.title = 'Auditor role cannot trigger scans'; }
-    const bulkBtn = document.querySelector('.scan-btn-bulk');
-    if (bulkBtn) { bulkBtn.disabled = true; }
+// ── Router ───────────────────────────────────────────────────────
+const PAGE_TITLES = {
+  home:      'Home',
+  inventory: 'Asset Inventory',
+  discovery: 'Asset Discovery',
+  cbom:      'CBOM',
+  posture:   'Posture of PQC',
+  rating:    'Cyber Rating',
+  reporting: 'Reporting',
+};
+
+function navigate(page) {
+  CURRENT_PAGE = page;
+  // Hide all pages
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  // Show target
+  const el = document.getElementById('page-' + page);
+  if (el) el.classList.add('active');
+  // Update header
+  document.getElementById('headerTitle').textContent = PAGE_TITLES[page] || page;
+  // Update sidebar
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const navEl = document.getElementById('nav-' + page);
+  if (navEl) navEl.classList.add('active');
+  // Load page data
+  loadPage(page);
+}
+
+async function loadPage(page) {
+  switch (page) {
+    case 'home':      await loadHome();      break;
+    case 'inventory': await loadInventory(); break;
+    case 'discovery': loadDiscovery();       break;
+    case 'cbom':      await loadCBOM();      break;
+    case 'posture':   await loadPosture();   break;
+    case 'rating':    await loadRating();    break;
+    case 'reporting': loadReporting();       break;
   }
 }
 
-/** Init auth on page load — show login if no valid token */
-async function initAuth() {
-  const token = getToken();
-  const user  = getUser();
+// ── Chart Factory ────────────────────────────────────────────────
+function destroyAllCharts() {
+  Object.values(CHARTS).forEach(c => { try { c.destroy(); } catch {} });
+  CHARTS = {};
+}
 
-  if (!token || !user) {
-    // No token — show login modal
-    document.getElementById('loginModal').classList.remove('hidden');
-    // Allow Enter key in login fields
-    ['loginUser','loginPass'].forEach(id =>
-      document.getElementById(id).addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); })
-    );
+function makeChart(id, type, data, options) {
+  if (CHARTS[id]) { try { CHARTS[id].destroy(); } catch {} }
+  const ctx = document.getElementById(id);
+  if (!ctx) return;
+  CHARTS[id] = new Chart(ctx, { type, data, options: options || {} });
+}
+
+// ── PAGE: HOME ───────────────────────────────────────────────────
+async function loadHome() {
+  // KPI counters
+  let stats = {};
+  try { stats = await api('GET', '/stats'); } catch {}
+  const total = stats.total_scans || 0;
+  document.getElementById('kpiTotal').textContent  = total;
+  document.getElementById('kpiSafe').textContent   = stats.safe_count   || 0;
+  document.getElementById('kpiHybrid').textContent = stats.hybrid_count || 0;
+  document.getElementById('kpiVuln').textContent   = stats.vuln_count   || 0;
+  document.getElementById('kpiTLS13').textContent  = stats.tls13_count  || 0;
+
+  // Cyber score quick pull
+  try {
+    const rating = await api('GET', '/cyber-rating');
+    document.getElementById('kpiScore').textContent = rating.enterprise_score || 0;
+  } catch { document.getElementById('kpiScore').textContent = '—'; }
+
+  // Mini posture doughnut
+  let postureData = {};
+  try { postureData = await api('GET', '/posture'); } catch {}
+  makeChart('homePostureChart', 'doughnut',
+    { labels: ['Elite-PQC', 'Standard', 'Legacy', 'Critical'],
+      datasets: [{ data: [postureData.elite||0, postureData.standard||0, postureData.legacy||0, postureData.critical||0],
+        backgroundColor: ['#16A34A','#3B82F6','#D97706','#DC2626'], borderWidth: 2 }] },
+    { plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } }, cutout: '60%' });
+
+  // Mini TLS bar
+  let cbomSum = {};
+  try { cbomSum = await api('GET', '/cbom/summary'); } catch {}
+  const tlsV = cbomSum.tls_versions || {};
+  const tlsLabels = Object.keys(tlsV);
+  const tlsVals   = tlsLabels.map(k => tlsV[k]);
+  makeChart('homeTLSChart', 'bar',
+    { labels: tlsLabels.length ? tlsLabels : ['No data'],
+      datasets: [{ label: 'Scans', data: tlsVals.length ? tlsVals : [0],
+        backgroundColor: ['#7B0000','#9B1212','#D4920E','#F0B429'] }] },
+    { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } });
+
+  // Fetch history once — reuse for expiry + IPv4/v6
+  let histData = {};
+  try { histData = await api('GET', '/history'); } catch {}
+  const scans = histData.scans || [];
+
+  // ── IPv4 / IPv6 breakdown doughnut ────────────────────────────
+  loadIPChart(scans);
+
+  // ── Certificate Expiry Timeline (derived from CBOM) ────────
+  loadCertExpiryList(scans);
+
+  // ── Nameserver Records (realistic PNB mock) ────────────────
+  loadNameserverRecords();
+
+  // ── Geographic Asset Map ────────────────────────────────────
+  initGeoMap();
+
+  // Recent scans list
+  const list = document.getElementById('homeRecentScans');
+  list.innerHTML = '';
+  if (!scans.length) {
+    list.innerHTML = '<div style="color:#888;font-size:13px;padding:12px;">No scans yet. Use Quick Scan above!</div>';
+    return;
+  }
+  scans.slice(0, 10).forEach(s => {
+    const verdictClass = s.verdict === 'safe' ? 'badge-safe' : s.verdict === 'hybrid' ? 'badge-hybrid' : 'badge-vuln';
+    list.innerHTML += `<div class="recent-item">
+      <span class="recent-target">${esc(s.target)}</span>
+      <span class="badge ${verdictClass}">${esc(s.verdict_label || s.verdict)}</span>
+      <span class="recent-time">${relativeTime(s.timestamp)}</span>
+    </div>`;
+  });
+}
+
+// Build IPv4 / IPv6 doughnut from scan targets
+function loadIPChart(scans) {
+  let v4 = 0, v6 = 0;
+  // A target is IPv6 if, after stripping port, the host contains ":" -> IPv6 format
+  scans.forEach(s => {
+    const host = (s.target || '').replace(/:\d+$/, '');
+    const bare = host.replace(/^\[|\]$/g, '');
+    if (bare.includes(':')) v6++; else v4++;
+  });
+  const totalIP = v4 + v6 || 1;
+  makeChart('homeIPChart', 'doughnut',
+    { labels: ['IPv4', 'IPv6'],
+      datasets: [{ data: [v4, v6],
+        backgroundColor: ['#3B82F6','#7C3AED'], borderWidth: 2 }] },
+    { plugins: { legend: { position: 'bottom', labels: { font: { size: 10 } } } }, cutout: '60%' });
+
+  const statEl = document.getElementById('homeIPStats');
+  if (statEl) {
+    const pct4 = Math.round(v4/totalIP*100);
+    const pct6 = Math.round(v6/totalIP*100);
+    statEl.innerHTML =
+      `<span style="color:#3B82F6">&#9646; IPv4: ${pct4}% (${v4})</span>` +
+      `<span style="color:#7C3AED">&#9646; IPv6: ${pct6}% (${v6})</span>`;
+  }
+}
+
+// Build certificate expiry timeline from scan CBOM data via posture endpoint
+async function loadCertExpiryList(scans) {
+  const el = document.getElementById('homeCertExpiry');
+  if (!el) return;
+
+  // Fetch full CBOM for each scan to get valid_to dates
+  const now = Date.now();
+  const MAX_DAYS = 365; // show certs expiring in the next year
+  const entries = [];
+
+  // Use up to 15 most recent scans to keep it snappy
+  for (const s of scans.slice(0, 15)) {
+    try {
+      const full = await api('GET', `/history/${encodeURIComponent(s.id)}`);
+      const asset = (full.assets || [])[0] || {};
+      const cert  = (asset.certificates || [])[0];
+      if (cert && cert.valid_to) {
+        const exp  = new Date(cert.valid_to);
+        const days = Math.round((exp - now) / 86400000);
+        if (days < MAX_DAYS) {
+          entries.push({ host: s.target, days, exp });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  if (!entries.length) {
+    el.innerHTML = '<div style="color:#888;font-size:12px;">No certificate expiry data yet. Run some scans!</div>';
     return;
   }
 
-  // Verify token is still valid
+  // Sort by soonest expiry first
+  entries.sort((a, b) => a.days - b.days);
+
+  el.innerHTML = entries.slice(0, 8).map(e => {
+    const cls   = e.days <= 30 ? 'urgent' : e.days <= 90 ? 'warn' : 'ok';
+    const label = e.days < 0  ? `Expired ${Math.abs(e.days)}d ago` :
+                  e.days === 0 ? 'Expires today' : `${e.days}d left`;
+    const pct   = Math.max(0, Math.min(100, Math.round(e.days / MAX_DAYS * 100)));
+    return `<div class="expiry-item">
+      <div class="expiry-label">
+        <span class="expiry-host" title="${esc(e.host)}">${esc(e.host)}</span>
+        <span class="expiry-days ${cls}">${label}</span>
+      </div>
+      <div class="expiry-bar-bg"><div class="expiry-bar ${cls}" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join('');
+}
+
+// Static PNB nameserver records
+function loadNameserverRecords() {
+  const ns = document.getElementById('homeNSBody');
+  if (!ns) return;
+  const records = [
+    { domain:'pnb.bank.in',          ns:'ns1.nixi-ns.in',   type:'NS' },
+    { domain:'pnb.bank.in',          ns:'ns2.nixi-ns.in',   type:'NS' },
+    { domain:'pnb.co.in',            ns:'ns1.nixi-ns.in',   type:'NS' },
+    { domain:'pnbisl.com',           ns:'ns01.microsec.com', type:'NS' },
+    { domain:'pnbhousing.com',       ns:'ns1.cloudflare.com',type:'NS' },
+    { domain:'www.pnb.bank.in',      ns:'40.104.62.216',    type:'A'  },
+    { domain:'mail.pnb.bank.in',     ns:'103.25.151.22',    type:'MX' },
+  ];
+  ns.innerHTML = records.map(r =>
+    `<tr><td>${r.domain}</td><td style="font-family:monospace;font-size:11px;">${r.ns}</td>
+     <td><span class="badge" style="background:#EDE9FE;color:#6D28D9;">${r.type}</span></td></tr>`
+  ).join('');
+}
+
+// ── HOME Quick Scan ──────────────────────────────────────────────
+async function homeRunScan() {
+  const target = document.getElementById('homeTarget').value.trim();
+  const status = document.getElementById('homeScanStatus');
+  if (!target) return;
+  status.className = 'scan-status'; status.style.background = '#FEF9C3'; status.style.color = '#854D0E';
+  status.textContent = `⏳ Scanning ${target}…`;
+  status.classList.remove('hidden');
   try {
-    const res = await fetch('http://localhost:8080/auth/me', authHeaders());
-    if (!res.ok) throw new Error('invalid');
-    document.getElementById('loginModal').classList.add('hidden');
-    applyRoleUI(user.role);
-    renderUserBadge(user.username, user.role);
-  } catch {
-    // Token expired — clear and show login
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    document.getElementById('loginModal').classList.remove('hidden');
+    const data = await api('GET', `/scan?target=${encodeURIComponent(target)}`);
+    const v = data.pqc_verdict || {};
+    const badge = v.verdict === 'safe' ? '✅ Post-Quantum Safe' : v.verdict === 'hybrid' ? '🔰 Hybrid PQ' : '⚠️ Quantum Vulnerable';
+    status.style.background = '#D1FAE5'; status.style.color = '#065F46';
+    status.textContent = `${badge} — ${target}  (TLS ${data.tls_version || '?'} · KEM: ${data.selected_group || 'none'})`;
+    loadHome();
+  } catch (e) {
+    status.style.background = '#FEE2E2'; status.style.color = '#991B1B';
+    status.textContent = `❌ ${e.message}`;
   }
 }
 
-/* ── 1. PQC Classification Constants ─────────────────────────── */
+// ── PAGE: ASSET INVENTORY ─────────────────────────────────────────
+async function loadInventory() {
+  let histData = {};
+  try { histData = await api('GET', '/history'); } catch {}
+  const scans = histData.scans || [];
 
-// Pure Post-Quantum ML-KEM groups (NIST FIPS 203)
-const PURE_PQ_GROUPS = ['MLKEM512', 'MLKEM768', 'MLKEM1024'];
-
-// Hybrid groups — one classical + one PQ component fused together
-const HYBRID_GROUPS = [
-  'X25519MLKEM768',
-  'SecP256r1MLKEM768',
-  'SecP384r1MLKEM1024',
-];
-
-// All PQC-capable groups (union of above)
-const ALL_PQ_GROUPS = [...PURE_PQ_GROUPS, ...HYBRID_GROUPS];
-
-// Signature algorithms that are quantum-safe (post-NIST PQC standards)
-const PQ_SIG_ALGOS = ['ML-DSA', 'SLH-DSA', 'Falcon', 'Dilithium', 'SPHINCS'];
-
-// Classical algorithms broken by Shor's algorithm on a CRQC
-const VULN_KEY_ALGOS = ['RSA', 'ECDSA', 'ECDH', 'DSA', 'Ed25519', 'Ed448', 'DH'];
-
-/* ── 2. PQC Verdict Engine ───────────────────────────────────── */
-
-/**
- * Computes the quantum safety verdict for one asset.
- * @param {Object} tls  - Protocol object from CBOM
- * @param {Object} cert - Certificate object from CBOM
- * @returns {{ cls: string, icon: string, label: string }}
- */
-function computeVerdict(tls, cert) {
-  const selected  = tls.selected_group   || '';
-  const supported = tls.supported_groups || [];
-  const sigAlgo   = cert.signature_algorithm       || '';
-  const pubKey    = cert.public_key_algorithm       || '';
-
-  const hasPQ     = ALL_PQ_GROUPS.some(g => selected === g || supported.includes(g));
-  const isPurePQ  = PURE_PQ_GROUPS.some(g => selected === g || supported.includes(g));
-  const isHybrid  = HYBRID_GROUPS.some(g =>  selected === g || supported.includes(g));
-  const hasPQSig  = PQ_SIG_ALGOS.some(a => sigAlgo.includes(a));
-  const hasVulnSig = VULN_KEY_ALGOS.some(a =>
-    pubKey.toUpperCase().includes(a.toUpperCase()) ||
-    sigAlgo.toUpperCase().includes(a.toUpperCase())
-  );
-
-  if (isPurePQ && !hasVulnSig && hasPQSig) {
-    return { cls: 'safe',   icon: '🟢', label: 'Fully Post-Quantum Safe' };
+  // Count expiring certs (<90 days) from scan data
+  let safe=0, hybrid=0, vuln=0, expiring=0;
+  const now = Date.now();
+  for (const s of scans) {
+    if (s.verdict==='safe') safe++;
+    else if (s.verdict==='hybrid') hybrid++;
+    else vuln++;
+    // Try to get cert expiry from CBOM without a second HTTP call
+    // We'll count using the /cbom/summary aggregate later if needed
   }
-  if ((isPurePQ || isHybrid) && !hasVulnSig) {
-    return { cls: 'safe',   icon: '🟢', label: 'Post-Quantum Safe' };
-  }
-  if (isHybrid && hasVulnSig) {
-    return { cls: 'hybrid', icon: '🟡', label: 'Hybrid PQ — Partially Safe' };
-  }
-  if (isPurePQ && hasVulnSig) {
-    return { cls: 'hybrid', icon: '🟡', label: 'Hybrid KEM — Cert Vulnerable' };
-  }
-  return { cls: 'vuln', icon: '🔴', label: 'Quantum Vulnerable' };
+
+  // Try to get expiring count from cbom/summary active_certs age estimate
+  try {
+    const cbomSum = await api('GET', '/cbom/summary');
+    // Approximate: use weak_crypto as a proxy for at-risk certs
+    expiring = cbomSum.expiring_90 || 0;
+  } catch {}
+
+  document.getElementById('invTotal').textContent   = scans.length;
+  document.getElementById('invSafe').textContent    = safe;
+  document.getElementById('invHybrid').textContent  = hybrid;
+  document.getElementById('invVuln').textContent    = vuln;
+  document.getElementById('invExpiring').textContent = expiring || '—';
+
+  renderInventoryTable(scans);
 }
 
-/* ── 3. Recommendations Engine ───────────────────────────────── */
-
-/**
- * Returns a list of actionable remediation recommendations for an asset.
- * Each item has: severity ('critical'|'high'|'medium'), issue, fix, command.
- */
-function getRecommendations(tls, cert) {
-  const recs = [];
-  const selected = tls.selected_group   || '';
-  const version  = tls.version          || '';
-  const pubKey   = cert.public_key_algorithm || '';
-  const sigAlgo  = cert.signature_algorithm  || '';
-
-  // ── TLS Version ────────────────────────────────────────────────────────────
-  if (version === 'TLS 1.2' || version === 'TLS 1.1' || version === 'TLS 1.0') {
-    recs.push({
-      severity: 'high',
-      issue: `Outdated TLS version: ${version}`,
-      fix: 'Enforce TLS 1.3 as the minimum. TLS 1.3 is mandatory for hybrid PQC key exchange.',
-      command: '# nginx:\nssl_protocols TLSv1.3;\n\n# Apache:\nSSLProtocol -all +TLSv1.3',
-    });
+// Re-scan all previously scanned targets
+async function invScanAll() {
+  const btn    = document.getElementById('scanAllBtn');
+  const status = document.getElementById('invScanStatus');
+  let histData = {};
+  try { histData = await api('GET', '/history'); } catch {}
+  const targets = [...new Set((histData.scans || []).map(s => s.target))];
+  if (!targets.length) {
+    setStatus(status, 'error', '❌ No assets found. Scan at least one target first.');
+    return;
   }
-
-  // ── Key Exchange Group ─────────────────────────────────────────────────────
-  if (!ALL_PQ_GROUPS.some(g => selected === g)) {
-    const best = version === 'TLS 1.3' ? 'X25519MLKEM768' : 'Upgrade TLS first';
-    recs.push({
-      severity: 'critical',
-      issue: `Classical key exchange only: ${selected || 'unknown'}`,
-      fix: 'Enable a hybrid or pure PQ key exchange group. X25519MLKEM768 is the IETF-recommended hybrid group (NIST ML-KEM-768 + X25519).',
-      command: `# nginx:\nssl_ecdh_curve ${best}:X25519:prime256v1;\n\n# OpenSSL:\nopenssl s_server -groups ${best}:X25519`,
-    });
-  } else if (HYBRID_GROUPS.includes(selected) && !PURE_PQ_GROUPS.includes(selected)) {
-    recs.push({
-      severity: 'medium',
-      issue: 'Hybrid PQ key exchange — classical component still present',
-      fix: 'Hybrid mode provides good protection today. Plan migration to pure ML-KEM when the ecosystem matures (post-2027).',
-      command: '# Current setup is acceptable per NIST transition guidelines.',
-    });
+  btn.disabled = true;
+  setStatus(status, 'loading', `⏳ Re-scanning ${targets.length} assets…`);
+  try {
+    const res = await api('POST', '/scan/bulk', { targets });
+    const ok  = (res.results || []).filter(r => r.status === 'ok').length;
+    setStatus(status, 'ok', `✅ Re-scan complete: ${ok}/${targets.length} updated`);
+    await loadInventory();
+  } catch (e) {
+    setStatus(status, 'error', `❌ ${e.message}`);
+  } finally {
+    btn.disabled = false;
   }
-
-  // ── Certificate Signature ──────────────────────────────────────────────────
-  const isClassicalCert = VULN_KEY_ALGOS.some(a =>
-    pubKey.toUpperCase().includes(a.toUpperCase()) ||
-    sigAlgo.toUpperCase().includes(a.toUpperCase())
-  );
-
-  if (isClassicalCert) {
-    let certalgo = 'RSA-2048';
-    if (pubKey.includes('ECDSA')) certalgo = 'ECDSA-P256';
-
-    recs.push({
-      severity: 'high',
-      issue: `Classical certificate signature: ${pubKey} / ${sigAlgo}`,
-      fix: `The certificate uses a quantum-vulnerable algorithm. Replace with ML-DSA-65 (CRYSTALS-Dilithium Level 2) or wait for CA support. Currently ${certalgo} is broken by Shor's algorithm on a CRQC.`,
-      command: '# Generate ML-DSA CSR (when OpenSSL 3.3+ with PQC support):\nopenssl req -new -newkey mldsa65 -out server.csr -keyout server.key\n\n# Alternatively use a PQC-capable CA (e.g. ISARA, DigiCert PQC labs)',
-    });
-  }
-
-  // ── TLS 1.3 cipher best practice ──────────────────────────────────────────
-  const cipher = tls.cipher_suite || '';
-  if (cipher.includes('AES_128') && version === 'TLS 1.3') {
-    recs.push({
-      severity: 'low',
-      issue: 'Using AES-128 — consider AES-256 for higher security margin',
-      fix: 'TLS_AES_256_GCM_SHA384 provides 256-bit symmetric security, hardening against Grover\'s algorithm which halves symmetric key security.',
-      command: '# nginx — prefer AES-256 cipher:\nssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;',
-    });
-  }
-
-  // ── No issues found ────────────────────────────────────────────────────────
-  if (recs.length === 0) {
-    recs.push({
-      severity: 'info',
-      issue: 'No critical issues found',
-      fix: 'This asset is using post-quantum resistant cryptography. Monitor for PQC standard updates (NIST FIPS 203/204/205) and plan certificate renewals accordingly.',
-      command: '# No immediate action required. Schedule periodic re-scan.',
-    });
-  }
-
-  return recs;
 }
 
-/** Renders a single recommendation card */
-function recCard(rec) {
-  const colors = {
-    critical: { bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.35)',   txt: '#ef4444', icon: '🚨' },
-    high:     { bg: 'rgba(239,68,68,.08)',  border: 'rgba(239,68,68,.25)',   txt: '#f87171', icon: '⚠️' },
-    medium:   { bg: 'rgba(245,158,11,.08)', border: 'rgba(245,158,11,.25)',  txt: '#f59e0b', icon: '🔶' },
-    low:      { bg: 'rgba(99,102,241,.08)', border: 'rgba(99,102,241,.25)',  txt: '#818cf8', icon: 'ℹ️' },
-    info:     { bg: 'rgba(16,185,129,.08)', border: 'rgba(16,185,129,.25)',  txt: '#10b981', icon: '✅' },
-  };
-  const c = colors[rec.severity] || colors.low;
+function renderInventoryTable(scans) {
+  const tbody = document.getElementById('invTableBody');
+  if (!scans.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">No assets scanned yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = scans.map(s => {
+    const vc = s.verdict === 'safe' ? 'badge-safe' : s.verdict === 'hybrid' ? 'badge-hybrid' : 'badge-vuln';
+    const risk = s.verdict === 'vuln' ? '<span class="risk-high">High</span>'
+                : s.verdict === 'hybrid' ? '<span class="risk-medium">Medium</span>'
+                : '<span class="risk-low">Low</span>';
+    const tls  = s.tls_version  || '—';
+    const kem  = s.selected_group || '—';
+    return `<tr>
+      <td><strong>${esc(s.target)}</strong></td>
+      <td>${relativeTime(s.timestamp)}</td>
+      <td>${esc(tls)}</td>
+      <td style="max-width:180px;word-break:break-all;font-size:11px;">${esc(kem)}</td>
+      <td><span class="badge ${vc}">${esc(s.verdict_label || s.verdict)}</span></td>
+      <td>${risk}</td>
+      <td><button class="tbl-btn" onclick="openCBOMModal('${esc(s.id)}','${esc(s.target)}')">📊 CBOM</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function invFilter() {
+  const q = document.getElementById('invSearch').value.toLowerCase();
+  document.querySelectorAll('#invTableBody tr').forEach(tr => {
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+async function invRunScan() {
+  const target = document.getElementById('invTarget').value.trim();
+  const status = document.getElementById('invScanStatus');
+  if (!target) return;
+  setStatus(status, 'loading', `⏳ Scanning ${target}…`);
+  try {
+    await api('GET', `/scan?target=${encodeURIComponent(target)}`);
+    setStatus(status, 'ok', `✅ Scan complete for ${target}`);
+    await loadInventory();
+  } catch (e) {
+    setStatus(status, 'error', `❌ ${e.message}`);
+  }
+}
+
+async function invBulkUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const status = document.getElementById('invScanStatus');
+  const text = await file.text();
+  const targets = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  setStatus(status, 'loading', `⏳ Bulk scanning ${targets.length} targets…`);
+  try {
+    const res = await api('POST', '/scan/bulk', { targets });
+    const ok  = (res.results || []).filter(r => r.status === 'ok').length;
+    setStatus(status, 'ok', `✅ Bulk complete: ${ok}/${targets.length} succeeded`);
+    await loadInventory();
+  } catch (e) {
+    setStatus(status, 'error', `❌ ${e.message}`);
+  }
+}
+
+// ── CBOM Modal ───────────────────────────────────────────────────
+async function openCBOMModal(id, target) {
+  const modal = document.getElementById('cbomModal');
+  const body  = document.getElementById('cbomModalBody');
+  const title = document.getElementById('cbomModalTitle');
+  title.textContent = `CBOM — ${target}`;
+  body.innerHTML = '<p style="color:#888;padding:20px;">Loading…</p>';
+  modal.classList.remove('hidden');
+  try {
+    const cbomRaw = await api('GET', `/history/${encodeURIComponent(id)}`);
+    body.innerHTML = renderCBOMDetail(cbomRaw, target);
+  } catch (e) {
+    body.innerHTML = `<p style="color:#991B1B">Error: ${e.message}</p>`;
+  }
+}
+
+function renderCBOMDetail(cbom, target) {
+  const asset = (cbom.assets || [])[0] || {};
+  const proto = (asset.protocols || [])[0] || {};
+  const cert  = (asset.certificates || [])[0] || {};
+  const meta  = cbom.metadata || {};
+  const pqc   = cbom.pqc_verdict || {};
 
   return `
-  <div style="background:${c.bg};border:1px solid ${c.border};border-radius:10px;padding:14px 16px;margin-bottom:12px;">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-      <span>${c.icon}</span>
-      <span style="color:${c.txt};font-weight:600;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em">${rec.severity}</span>
+  <div class="cbom-section">
+    <h4>📋 Scan Metadata</h4>
+    <div class="cbom-kv">
+      <span class="cbom-key">Target</span><span class="cbom-val">${esc(target)}</span>
+      <span class="cbom-key">Scan ID</span><span class="cbom-val">${esc(cbom.bom_ref || cbom.scan_id || '—')}</span>
+      <span class="cbom-key">Timestamp</span><span class="cbom-val">${esc(cbom.metadata?.timestamp || '—')}</span>
+      <span class="cbom-key">Compliance</span><span class="cbom-val">${esc(meta.compliance_framework || '—')}</span>
     </div>
-    <div style="font-size:.9rem;font-weight:500;color:var(--text);margin-bottom:4px;">${rec.issue}</div>
-    <div style="font-size:.82rem;color:var(--muted);margin-bottom:10px;line-height:1.6;">${rec.fix}</div>
-    <details style="cursor:pointer;">
-      <summary style="font-size:.75rem;color:var(--accent2);user-select:none;">Show remediation commands</summary>
-      <pre style="margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:.72rem;color:var(--text);overflow-x:auto;white-space:pre-wrap;">${rec.command}</pre>
-    </details>
+  </div>
+  <div class="cbom-section">
+    <h4>🔐 PQC Verdict</h4>
+    <div class="cbom-kv">
+      <span class="cbom-key">Verdict</span><span class="cbom-val"><strong>${esc(pqc.label || pqc.verdict || '—')}</strong></span>
+      <span class="cbom-key">PQ Secrecy</span><span class="cbom-val">${pqc.pq_secrecy ? '✅ Yes' : '❌ No'}</span>
+      <span class="cbom-key">PQ Auth</span><span class="cbom-val">${pqc.pq_auth    ? '✅ Yes' : '❌ No'}</span>
+    </div>
+  </div>
+  <div class="cbom-section">
+    <h4>🌐 Network / TLS</h4>
+    <div class="cbom-kv">
+      <span class="cbom-key">TLS Version</span><span class="cbom-val">${esc(proto.version || '—')}</span>
+      <span class="cbom-key">Cipher Suite</span><span class="cbom-val">${esc(proto.cipher_suite || '—')}</span>
+      <span class="cbom-key">KEM Group</span><span class="cbom-val">${esc(proto.selected_group || proto.kem_group || '—')}</span>
+    </div>
+  </div>
+  <div class="cbom-section">
+    <h4>🔒 Certificate</h4>
+    <div class="cbom-kv">
+      <span class="cbom-key">Subject</span><span class="cbom-val">${esc(cert.subject || '—')}</span>
+      <span class="cbom-key">Issuer</span><span class="cbom-val">${esc(cert.issuer  || '—')}</span>
+      <span class="cbom-key">Valid To</span><span class="cbom-val">${esc(cert.valid_to || '—')}</span>
+      <span class="cbom-key">Key Alg</span><span class="cbom-val">${esc(cert.public_key_algorithm || '—')}</span>
+      <span class="cbom-key">Key Size</span><span class="cbom-val">${cert.public_key_size ? cert.public_key_size + ' bits' : '—'}</span>
+    </div>
+  </div>
+  <div style="text-align:right;margin-top:12px;">
+    <button class="btn-primary" onclick="exportCBOMJSON(${JSON.stringify(JSON.stringify(cbom))})">📥 Export JSON</button>
   </div>`;
 }
 
-/* ── 4. Export Functions ─────────────────────────────────────── */
+function closeCBOMModal(e) {
+  if (!e || e.target === document.getElementById('cbomModal'))
+    document.getElementById('cbomModal').classList.add('hidden');
+}
 
-/** Download the full CBOM as a JSON file */
-function downloadJSON(data) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `cbom-${(data.target || 'scan').replace(/[^a-z0-9]/gi, '_')}-${Date.now()}.json`;
+function exportCBOMJSON(jsonStr) {
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cbom_export.json';
   a.click();
-  URL.revokeObjectURL(url);
 }
 
-/** Generate a "Quantum Safety Certificate" PDF for the given asset */
-function downloadPDF(asset, verdict, scanData) {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+// ── PAGE: ASSET DISCOVERY (semi-mock) ────────────────────────────
+const MOCK_DOMAINS = [
+  { date:'03 Mar 2026', domain:'www.cos.pnb.bank.in',     reg:'17 Feb 2005', registrar:'National Internet Exchange of India', company:'PNB' },
+  { date:'17 Oct 2024', domain:'www2.pnbrrbkiosk.in',     reg:'22 Mar 2021', registrar:'National Internet Exchange of India', company:'PNB' },
+  { date:'17 Oct 2024', domain:'upload.pnbuniv.net.in',   reg:'22 Mar 2021', registrar:'National Internet Exchange of India', company:'PNB' },
+  { date:'17 Oct 2024', domain:'postman.pnb.bank.in',     reg:'22 Mar 2021', registrar:'National Internet Exchange of India', company:'PNB' },
+  { date:'17 Nov 2024', domain:'proxy.pnb.bank.in',       reg:'22 Mar 2021', registrar:'National Internet Exchange of India', company:'PNB' },
+  { date:'01 Jan 2026', domain:'api.pnb.bank.in',         reg:'15 Jun 2018', registrar:'NIXI',                                company:'PNB' },
+  { date:'01 Jan 2026', domain:'mobile.pnb.bank.in',      reg:'15 Jun 2018', registrar:'NIXI',                                company:'PNB' },
+];
 
-  const tls  = (asset.protocols    || [])[0] || {};
-  const cert = (asset.certificates || [])[0] || {};
-  const keys = (asset.keys         || [])[0] || {};
+const MOCK_SSL = [
+  { date:'10 Mar 2026', sha:'b7563b983bf d217d471f60 7c9bbc50903 4a6', from:'08 Feb 2026', cn:'Generic Cert for WF Ovrd', company:'PNB', ca:'Symantac' },
+  { date:'10 Mar 2026', sha:'d8527f5c3e99 b37164a8f327 4a914506c94',   from:'07 Feb 2026', cn:'Generic Cert for WF Ovrd', company:'PNB', ca:'Digi-Cert' },
+  { date:'10 Mar 2026', sha:'Abe3195b867 04f88cb75c7b cd11c69b9e4 93', from:'06 Feb 2026', cn:'Generic Cert for WF Ovrd', company:'PNB', ca:'Entrust' },
+];
 
-  // ── Header ──────────────────────────────────────────────────────────────
-  doc.setFillColor(10, 12, 20);
-  doc.rect(0, 0, 210, 40, 'F');
+const MOCK_IPS = [
+  { date:'05 Mar 2026', ip:'40.104.62.216', ports:'80',     subnet:'103.107.224.0/22', asn:'AS9583', netname:'MSFT',              loc:'—',            company:'Punjab National Bank' },
+  { date:'17 Oct 2024', ip:'40.101.72.212', ports:'80',     subnet:'103.107.224.0/22', asn:'AS9583', netname:'—',               loc:'India',        company:'Punjab National Bank' },
+  { date:'17 Oct 2024', ip:'402.10.1.1',    ports:'80',     subnet:'103.107.224.0/22', asn:'AS9583', netname:'—',               loc:'—',            company:'Punjab National Bank' },
+  { date:'17 Oct 2024', ip:'103.25.151.22', ports:'53,80',  subnet:'103.107.224.0/22', asn:'AS9583', netname:'Quantum-Link-Co', loc:'Nashik, India',company:'Punjab National Bank' },
+  { date:'17 Nov 2024', ip:'181.65.122.92', ports:'80,443', subnet:'103.107.224.0/22', asn:'AS9583', netname:'E2E-Networks-IN', loc:'Chennai, India',company:'Punjab National Bank' },
+  { date:'17 Nov 2024', ip:'20.153.63.72',  ports:'443',    subnet:'103.107.224.0/22', asn:'AS9583', netname:'—',               loc:'Leh, India',   company:'Punjab National Bank' },
+];
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(20);
-  doc.setTextColor(129, 140, 248);
-  doc.text('QuantumSentry', 14, 18);
+const MOCK_SOFTWARE = [
+  { date:'05 Mar 2026', product:'http_server', version:'—',      type:'WebServer', port:443,  host:'49.51.98.173',  company:'PNB' },
+  { date:'17 Oct 2024', product:'http_server', version:'—',      type:'WebServer', port:587,  host:'49.52.123.215', company:'PNB' },
+  { date:'17 Oct 2024', product:'Apache',      version:'—',      type:'WebServer', port:443,  host:'40.59.99.173',  company:'PNB' },
+  { date:'17 Oct 2024', product:'IIS',         version:'10.0',   type:'WebServer', port:80,   host:'40.101.27.212', company:'PNB' },
+  { date:'17 Nov 2024', product:'Microsoft–IIS',version:'10.0',  type:'WebServer', port:80,   host:'401.10.274.14', company:'PNB' },
+  { date:'06 Mar 2006', product:'OpenResty',   version:'1.27.1.1',type:'WebServer',port:2087, host:'66.68.262.93',  company:'PNB' },
+];
 
-  doc.setFontSize(9);
-  doc.setTextColor(107, 120, 153);
-  doc.text('Post-Quantum Cryptography Readiness Report', 14, 26);
-  doc.text(`Generated: ${new Date().toISOString()}`, 14, 33);
-
-  // ── Verdict Banner ──────────────────────────────────────────────────────
-  const vColors = { safe: [16,185,129], hybrid: [245,158,11], vuln: [239,68,68] };
-  const vc = vColors[verdict.cls] || vColors.vuln;
-
-  doc.setFillColor(...vc);
-  doc.rect(0, 42, 210, 18, 'F');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(255, 255, 255);
-  doc.text(`${verdict.icon}  ${verdict.label}`, 14, 54);
-  doc.setFontSize(9);
-  doc.text(`Target: ${asset.host || scanData.target}`, 150, 54);
-
-  // ── Section helper ──────────────────────────────────────────────────────
-  let y = 72;
-  const sectionTitle = (title) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    doc.setTextColor(99, 102, 241);
-    doc.text(title, 14, y);
-    doc.setDrawColor(99, 102, 241);
-    doc.setLineWidth(0.3);
-    doc.line(14, y + 2, 196, y + 2);
-    y += 10;
-  };
-
-  const row = (label, value) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.setTextColor(107, 120, 153);
-    doc.text(label, 14, y);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(226, 232, 248);
-    doc.text(String(value || '—').substring(0, 90), 70, y);
-    y += 7;
-  };
-
-  doc.setFillColor(17, 20, 34);
-  doc.rect(0, 62, 210, 297, 'F');
-
-  // ── Network ────────────────────────────────────────────────────────────
-  sectionTitle('Network Information');
-  const net = asset.network || {};
-  row('Source IP',      net.source_ip);
-  row('Destination IP', net.destination_ip);
-  row('SNI',            net.sni);
-  row('ALPN',           tls.alpn);
-  y += 4;
-
-  // ── TLS / Protocol ─────────────────────────────────────────────────────
-  sectionTitle('Protocol (TLS)');
-  row('Asset Type',      tls.asset_type || 'protocol');
-  row('TLS Version',     tls.version);
-  row('Protocol OID',    tls.oid);
-  row('Cipher Suite',    tls.cipher_suite);
-  row('Selected KEM',    tls.selected_group);
-  row('Supported Groups',(tls.supported_groups || []).join(', ') || '—');
-  y += 4;
-
-  // ── Certificate ────────────────────────────────────────────────────────
-  sectionTitle('Certificate');
-  row('Asset Type',         cert.asset_type || 'certificate');
-  row('Subject',            cert.subject);
-  row('Issuer',             cert.issuer);
-  row('Valid From',         cert.valid_from);
-  row('Valid To',           cert.valid_to);
-  row('Serial Number',      cert.serial_number);
-  row('Sig Algorithm',      cert.signature_algorithm);
-  row('Sig Algorithm OID',  cert.signature_algorithm_ref);
-  row('Public Key',         `${cert.public_key_algorithm} (${cert.public_key_size} bits)`);
-  row('Certificate Format', cert.certificate_format);
-  y += 4;
-
-  // ── Keys ────────────────────────────────────────────────────────────────
-  if (y < 240) {
-    sectionTitle('Cryptographic Key');
-    row('Asset Type',       keys.asset_type || 'key');
-    row('Name',             keys.name);
-    row('ID / Fingerprint', keys.id);
-    row('Algorithm',        keys.algorithm);
-    row('Key Size',         keys.size ? `${keys.size} bits` : '—');
-    row('State',            keys.state);
-    row('Creation Date',    keys.creation_date);
-    y += 4;
-  }
-
-  // ── Footer ──────────────────────────────────────────────────────────────
-  doc.setFont('helvetica', 'italic');
-  doc.setFontSize(7);
-  doc.setTextColor(107, 120, 153);
-  doc.text(
-    'This report was generated by QuantumSentry. Based on NIST FIPS 203/204/205 and CERT-In CBOM guidelines.',
-    14, 285
-  );
-  doc.text(`Scan ID: ${scanData.scan_id || '—'}`, 14, 290);
-
-  doc.save(`quantum-safety-certificate-${(asset.host||'').replace(/[^a-z0-9]/gi,'_')}.pdf`);
+function loadDiscovery() {
+  // Populate all 4 tables with mock data
+  document.getElementById('disc-domains-body').innerHTML = MOCK_DOMAINS.map(d =>
+    `<tr><td>${d.date}</td><td>${d.domain}</td><td>${d.reg}</td><td>${d.registrar}</td><td>${d.company}</td></tr>`).join('');
+  document.getElementById('disc-ssl-body').innerHTML = MOCK_SSL.map(s =>
+    `<tr><td>${s.date}</td><td style="font-size:11px;font-family:monospace;">${s.sha}</td><td>${s.from}</td><td>${s.cn}</td><td>${s.company}</td><td>${s.ca}</td></tr>`).join('');
+  document.getElementById('disc-ip-body').innerHTML = MOCK_IPS.map(i =>
+    `<tr><td>${i.date}</td><td>${i.ip}</td><td>${i.ports}</td><td>${i.subnet}</td><td>${i.asn}</td><td>${i.loc}</td><td>${i.company}</td></tr>`).join('');
+  document.getElementById('disc-software-body').innerHTML = MOCK_SOFTWARE.map(s =>
+    `<tr><td>${s.date}</td><td>${s.product}</td><td>${s.version}</td><td>${s.type}</td><td>${s.port}</td><td>${s.host}</td><td>${s.company}</td></tr>`).join('');
+  initNetworkMap();
 }
 
-/* ── 5. Render Engine ────────────────────────────────────────── */
+function discTab(tab) {
+  document.querySelectorAll('.disc-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.disc-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('disc-' + tab).classList.add('active');
+  document.getElementById('disc-tab-' + tab).classList.add('active');
+  if (tab === 'network') setTimeout(initNetworkMap, 80); // wait for panel to be visible
+}
 
-let _lastScanData = null; // stored for export
+function discFilter(btn, panel, filter) {
+  btn.closest('.filter-row').querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
 
-function render(data) {
-  _lastScanData = data;
-  const container = document.getElementById('result');
-  container.innerHTML = '';
+function discDoSearch() {
+  const q = document.getElementById('discSearch').value.trim();
+  if (q) alert(`Discovery search for "${q}" — in production this queries passive DNS, certificate transparency logs, and Shodan.`);
+}
 
-  (data.assets || []).forEach((asset, idx) => {
-    const net  = asset.network       || {};
-    const tls  = (asset.protocols    || [])[0] || {};
-    const cert = (asset.certificates || [])[0] || {};
-    const keys = (asset.keys         || [])[0] || {};
-    const id   = `asset-${idx}`;
+// ── D3 NETWORK TOPOLOGY GRAPH ─────────────────────────────────────
+let _networkSimulation = null;
 
-    const verdict = computeVerdict(tls, cert);
-    const recs    = getRecommendations(tls, cert);
+async function initNetworkMap() {
+  const svgEl = document.getElementById('networkSVG');
+  if (!svgEl || !window.d3) return;
 
-    // ── Group tags ────────────────────────────────────────────────────────
-    const groupTags = (tls.supported_groups || []).map(g =>
-      `<span class="tag ${groupClass(g)}">${g}</span>`
-    ).join('') || '<span class="tag classic">none captured</span>';
+  d3.select(svgEl).selectAll('*').remove();
+  if (_networkSimulation) { _networkSimulation.stop(); _networkSimulation = null; }
 
-    // ── Algorithm cards ───────────────────────────────────────────────────
-    const algoCards = (tls.algorithms || []).map(a => `
-      <div class="algo-card">
-        <div class="algo-name">${a.name}</div>
-        <div class="algo-mode">${a.mode ? a.mode + ' mode' : a.primitive}</div>
-        ${a.oid ? `<div class="algo-bits" style="color:var(--muted);font-size:.68rem">${a.oid}</div>` : ''}
-        <div class="algo-bits">${a.security_bits ? a.security_bits + ' bits classical' : ''}</div>
-      </div>`).join('') || '<span style="color:var(--muted);font-size:.85rem">No algorithms parsed</span>';
+  const W = svgEl.clientWidth  || 900;
+  const H = svgEl.clientHeight || 500;
+  const svg = d3.select(svgEl);
+  const g   = svg.append('g');
 
-    // ── OID pills ─────────────────────────────────────────────────────────
-    const oidPills = (cert.oids || []).map(o =>
-      `<span class="oid-pill">${o}</span>`).join('');
+  svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', e => g.attr('transform', e.transform)));
 
-    // ── DNS list ──────────────────────────────────────────────────────────
-    const dnsList = (cert.dns_names || []).map(d =>
-      `<div class="dns-item">${d}</div>`).join('');
+  // Glow filter
+  const defs = svg.append('defs');
+  const filt = defs.append('filter').attr('id', 'nGlow');
+  filt.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'blur');
+  const fm = filt.append('feMerge');
+  fm.append('feMergeNode').attr('in', 'blur');
+  fm.append('feMergeNode').attr('in', 'SourceGraphic');
 
-    // ── Selected group color ──────────────────────────────────────────────
-    const selectedGroupColor =
-      PURE_PQ_GROUPS.includes(tls.selected_group) ? 'safe'  :
-      HYBRID_GROUPS.includes(tls.selected_group)  ? 'hybrid': 'vuln';
+  // Fetch scan history for real PQC colors
+  let scans = [];
+  try { const h = await api('GET', '/history'); scans = h.scans || []; } catch {}
 
-    // ── Recommendations HTML ──────────────────────────────────────────────
-    const recsHTML = recs.map(recCard).join('');
+  const nodes = [], links = [], idSet = new Set();
+  const addNode = n => { if (!idSet.has(n.id)) { idSet.add(n.id); nodes.push(n); } };
 
-    // ── Key info panel ────────────────────────────────────────────────────
-    const keyPanel = keys.name ? `
-      <div class="info-grid" style="margin-top:12px">
-        <div class="info-item"><div class="info-label">Asset Type</div><div class="info-value">${keys.asset_type||'key'}</div></div>
-        <div class="info-item"><div class="info-label">Key Name</div><div class="info-value highlight">${keys.name||'—'}</div></div>
-        <div class="info-item"><div class="info-label">Algorithm</div><div class="info-value">${keys.algorithm||'—'}</div></div>
-        <div class="info-item"><div class="info-label">Size</div><div class="info-value">${keys.size ? keys.size+' bits' : '—'}</div></div>
-        <div class="info-item"><div class="info-label">State</div>
-          <div class="info-value ${keys.state==='active'?'safe':keys.state==='expired'?'vuln':''}">${keys.state||'—'}</div></div>
-        <div class="info-item"><div class="info-label">ID / Fingerprint</div><div class="info-value" style="font-size:.72rem">${keys.id||'—'}</div></div>
-        <div class="info-item"><div class="info-label">Creation Date</div><div class="info-value">${fmt(keys.creation_date)}</div></div>
-        <div class="info-item"><div class="info-label">Activation Date</div><div class="info-value">${fmt(keys.activation_date)}</div></div>
-      </div>` : '<span style="color:var(--muted);font-size:.85rem">Key data not available</span>';
+  // Hub node
+  addNode({ id:'hub', label:'PNB Hub', type:'hub', r:24, color:'#7B0000', info:'Punjab National Bank' });
 
-    container.innerHTML += `
-    <div class="asset-card">
+  // Subnet aggregator
+  addNode({ id:'sn1', label:'103.107.224/22', type:'subnet', r:15, color:'#475569', info:'PNB Main Subnet' });
+  links.push({ source:'hub', target:'sn1' });
 
-      <!-- Header -->
-      <div class="card-header">
-        <div>
-          <div class="card-title">Asset ${idx + 1}</div>
-          <div class="card-host">${asset.host || data.target || '—'}</div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
-          <div class="verdict ${verdict.cls}">
-            <span class="verdict-dot"></span>
-            ${verdict.icon} ${verdict.label}
-          </div>
-          <!-- Export buttons -->
-          <button class="export-btn" onclick="downloadJSON(window._lastScanData)" title="Download CBOM JSON">
-            ⬇ JSON
-          </button>
-          <button class="export-btn export-pdf" onclick="downloadPDF(window._lastScanData.assets[${idx}], ${JSON.stringify(verdict)}, window._lastScanData)" title="Download PDF Certificate">
-            📄 PDF
-          </button>
-        </div>
-      </div>
-
-      <!-- Tabs -->
-      <div class="tabs">
-        <button class="tab-btn active" id="tab-network-${id}" onclick="switchTab('${id}','network')">🌐 Network</button>
-        <button class="tab-btn"        id="tab-tls-${id}"     onclick="switchTab('${id}','tls')">🔐 TLS</button>
-        <button class="tab-btn"        id="tab-cert-${id}"    onclick="switchTab('${id}','cert')">📜 Certificate</button>
-        <button class="tab-btn"        id="tab-keys-${id}"    onclick="switchTab('${id}','keys')">🔑 Keys</button>
-        <button class="tab-btn rec-tab ${verdict.cls==='vuln'?'tab-urgent':''}" 
-                id="tab-rec-${id}" onclick="switchTab('${id}','rec')">
-          🔧 Recommendations ${verdict.cls==='vuln'?'<span class="urgency-dot"></span>':''}
-        </button>
-      </div>
-
-      <!-- NETWORK panel -->
-      <div class="tab-panel active" id="network-${id}">
-        <div class="info-grid">
-          <div class="info-item"><div class="info-label">Source IP</div><div class="info-value">${val(net.source_ip)}</div></div>
-          <div class="info-item"><div class="info-label">Destination IP</div><div class="info-value">${val(net.destination_ip)}</div></div>
-          <div class="info-item"><div class="info-label">SNI</div><div class="info-value highlight">${val(net.sni)}</div></div>
-          <div class="info-item"><div class="info-label">ALPN Protocol</div><div class="info-value">${val(tls.alpn)}</div></div>
-        </div>
-      </div>
-
-      <!-- TLS panel -->
-      <div class="tab-panel" id="tls-${id}">
-        <div class="info-grid">
-          <div class="info-item"><div class="info-label">Asset Type</div><div class="info-value">${val(tls.asset_type)}</div></div>
-          <div class="info-item"><div class="info-label">TLS Version</div><div class="info-value highlight">${val(tls.version)}</div></div>
-          <div class="info-item"><div class="info-label">Protocol OID</div><div class="info-value" style="font-size:.78rem">${val(tls.oid)}</div></div>
-          <div class="info-item"><div class="info-label">Cipher Suite</div><div class="info-value" style="font-size:.8rem">${val(tls.cipher_suite)}</div></div>
-          <div class="info-item" style="grid-column:1/-1">
-            <div class="info-label">Selected Key Exchange Group (KEM)</div>
-            <div class="info-value ${selectedGroupColor}">${val(tls.selected_group)}</div>
-          </div>
-        </div>
-        <div class="section-label">Supported Groups (advertised in ClientHello)</div>
-        <div class="tags">${groupTags}</div>
-        <div class="section-label">Algorithms in Cipher Suite</div>
-        <div class="algo-grid">${algoCards}</div>
-      </div>
-
-      <!-- CERT panel -->
-      <div class="tab-panel" id="cert-${id}">
-        <div class="info-grid">
-          <div class="info-item"><div class="info-label">Asset Type</div><div class="info-value">${val(cert.asset_type)}</div></div>
-          <div class="info-item"><div class="info-label">Certificate Format</div><div class="info-value">${val(cert.certificate_format)}</div></div>
-          <div class="info-item" style="grid-column:1/-1">
-            <div class="info-label">Subject</div>
-            <div class="info-value highlight">${val(cert.subject)}</div>
-          </div>
-          <div class="info-item" style="grid-column:1/-1">
-            <div class="info-label">Issuer</div>
-            <div class="info-value">${val(cert.issuer)}</div>
-          </div>
-          <div class="info-item"><div class="info-label">Public Key Algorithm</div><div class="info-value">${val(cert.public_key_algorithm)} (${cert.public_key_size || '?'} bits)</div></div>
-          <div class="info-item"><div class="info-label">Signature Algorithm</div><div class="info-value">${val(cert.signature_algorithm)}</div></div>
-          <div class="info-item"><div class="info-label">Signature Algo OID</div><div class="info-value" style="font-size:.78rem">${val(cert.signature_algorithm_ref)}</div></div>
-          <div class="info-item"><div class="info-label">Public Key Ref</div><div class="info-value" style="font-size:.72rem">${val(cert.public_key_ref)}</div></div>
-          <div class="info-item"><div class="info-label">Valid From</div><div class="info-value">${fmt(cert.valid_from)}</div></div>
-          <div class="info-item"><div class="info-label">Valid To (Not After)</div><div class="info-value">${fmt(cert.valid_to)}</div></div>
-          <div class="info-item"><div class="info-label">Serial Number</div><div class="info-value" style="font-size:.75rem">${val(cert.serial_number)}</div></div>
-          <div class="info-item"><div class="info-label">Is CA</div><div class="info-value">${cert.is_ca ? '✅ Yes' : '— No'}</div></div>
-        </div>
-
-        <div class="section-label">Key Usage</div>
-        <div class="tags">${(cert.key_usage || []).map(k => `<span class="tag">${k}</span>`).join('') || '—'}</div>
-
-        <div class="section-label">Extension OIDs</div>
-        <div class="tags">${oidPills || '—'}</div>
-
-        <div class="divider"></div>
-
-        <div class="section-label">DNS Names (${(cert.dns_names || []).length})</div>
-        <input class="dns-search" placeholder="Search DNS names…" oninput="filterDNS('dns-${id}', this.value)" />
-        <div class="dns-list" id="dns-${id}">${dnsList}</div>
-      </div>
-
-      <!-- KEYS panel -->
-      <div class="tab-panel" id="keys-${id}">
-        <p style="font-size:.8rem;color:var(--muted);margin-bottom:14px;">
-          Cryptographic key derived from the server certificate public key.<br/>
-          <em>Private key values are never stored or transmitted.</em>
-        </p>
-        ${keyPanel}
-      </div>
-
-      <!-- RECOMMENDATIONS panel -->
-      <div class="tab-panel" id="rec-${id}">
-        <p style="font-size:.8rem;color:var(--muted);margin-bottom:16px;">
-          Actionable remediation steps to improve quantum-readiness for this asset.
-        </p>
-        ${recsHTML}
-      </div>
-
-    </div>`;
+  // Domain nodes
+  MOCK_DOMAINS.slice(0, 6).forEach(d => {
+    const id = 'dom_' + d.domain;
+    addNode({ id, label: d.domain.replace('www.',''), type:'domain', r:13, color:'#3B82F6', info: 'Registrar: '+d.registrar });
+    links.push({ source:'hub', target: id });
   });
 
-  // expose for global export button
-  window._lastScanData = data;
-}
-
-/* ── 6. Tab & UI Helpers ─────────────────────────────────────── */
-
-function switchTab(cardId, tab) {
-  ['network','tls','cert','keys','rec'].forEach(t => {
-    const panel = document.getElementById(`${t}-${cardId}`);
-    const btn   = document.getElementById(`tab-${t}-${cardId}`);
-    if (panel) panel.classList.remove('active');
-    if (btn)   btn.classList.remove('active');
+  // IP nodes with PQC color
+  MOCK_IPS.forEach(ip => {
+    const id = 'ip_' + ip.ip;
+    const match = scans.find(s => (s.target||'').includes(ip.ip));
+    const color = match
+      ? (match.verdict==='safe' ? '#16A34A' : match.verdict==='hybrid' ? '#D97706' : '#DC2626')
+      : '#64748B';
+    addNode({ id, label: ip.ip, type:'ip', r:11, color, info:`Ports: ${ip.ports} | Loc: ${ip.loc}` });
+    links.push({ source:'sn1', target: id });
   });
-  const activePanel = document.getElementById(`${tab}-${cardId}`);
-  const activeBtn   = document.getElementById(`tab-${tab}-${cardId}`);
-  if (activePanel) activePanel.classList.add('active');
-  if (activeBtn)   activeBtn.classList.add('active');
-}
 
-function filterDNS(id, q) {
-  const list = document.getElementById(id);
-  if (!list) return;
-  for (const item of list.children) {
-    item.style.display = item.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
-  }
-}
-
-function groupClass(g) {
-  if (PURE_PQ_GROUPS.includes(g)) return 'pq';
-  if (HYBRID_GROUPS.includes(g))  return 'hybrid';
-  return 'classic';
-}
-
-function fmt(d) {
-  if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-function val(v) { return v || '<span style="color:var(--muted)">—</span>'; }
-
-function quickScan(target) {
-  document.getElementById('target').value = target;
-  scan();
-}
-
-function setScanning(yes) {
-  const btn    = document.getElementById('scanBtn');
-  const text   = document.getElementById('btnText');
-  const loader = document.getElementById('btnLoader');
-  btn.disabled = yes;
-  text.classList.toggle('hidden', yes);
-  loader.classList.toggle('hidden', !yes);
-}
-
-function setStatus(msg, type) {
-  const el = document.getElementById('status');
-  el.className = `status-bar ${type}`;
-  el.classList.remove('hidden');
-  el.innerHTML = msg;
-}
-
-/* ── 7. Scan Function ────────────────────────────────────────── */
-
-async function scan() {
-  const target = document.getElementById('target').value.trim();
-  if (!target) return;
-
-  document.getElementById('result').innerHTML = '';
-  setScanning(true);
-  setStatus(`⏳ &nbsp;Scanning <b>${target}</b>…`, 'scanning');
-
-  try {
-    const res  = await authFetch(`http://localhost:8080/scan?target=${encodeURIComponent(target)}`);
-    const data = await res.json();
-
-    if (data.error) {
-      setStatus(`❌ &nbsp;${data.error}`, 'error');
-      setScanning(false);
-      return;
-    }
-
-    setStatus(`✅ &nbsp;Scan complete — <b>${(data.assets || []).length}</b> asset(s) found`, 'success');
-    render(data);
-  } catch (err) {
-    console.error(err);
-    setStatus(`❌ &nbsp;Request failed: ${err.message}`, 'error');
-  } finally {
-    setScanning(false);
-  }
-}
-
-/* ── Enter key support ───────────────────────────────────────── */
-document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('target').addEventListener('keydown', e => {
-    if (e.key === 'Enter') scan();
+  // Scanned external hosts
+  [...new Set(scans.map(s => s.target))].slice(0, 8).forEach(t => {
+    const id = 'ext_' + t;
+    if (idSet.has(id)) return;
+    const s = scans.find(x => x.target === t);
+    const c = s?.verdict==='safe' ? '#16A34A' : s?.verdict==='hybrid' ? '#D97706' : '#DC2626';
+    addNode({ id, label: t.replace(':443',''), type:'scanned', r:12, color:c, info:`PQC: ${s?.verdict_label||s?.verdict||'?'}` });
+    links.push({ source:'hub', target: id });
   });
-  initAuth(); // check token, show login modal if needed
-});
 
-/* ── 9. Bulk Scan Functions ──────────────────────────────── */
+  // Draw links
+  const link = g.append('g').selectAll('line')
+    .data(links).join('line').attr('class','link');
 
-let _bulkData = null; // stored for JSON export
+  // Tooltip
+  const tip = document.getElementById('networkTooltip');
 
-/** Toggle the bulk scan section open/closed */
-function toggleBulk() {
-  const body    = document.getElementById('bulkBody');
-  const chevron = document.getElementById('bulkChevron');
-  const isHidden = body.classList.contains('hidden');
-  body.classList.toggle('hidden', !isHidden);
-  chevron.textContent = isHidden ? '▲ collapse' : '▼ expand';
-}
+  // Draw nodes
+  const node = g.append('g').selectAll('g')
+    .data(nodes).join('g')
+    .call(d3.drag()
+      .on('start',(e,d)=>{ if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag', (e,d)=>{ d.fx=e.x; d.fy=e.y; })
+      .on('end',  (e,d)=>{ if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }))
+    .on('mouseover', (e,d) => {
+      tip.classList.remove('hidden');
+      tip.innerHTML = `<strong>${d.label}</strong><br><span style="opacity:0.7">${d.info||d.type}</span>`;
+    })
+    .on('mousemove', e => {
+      const r = svgEl.getBoundingClientRect();
+      tip.style.left = (e.clientX - r.left + 14) + 'px';
+      tip.style.top  = (e.clientY - r.top  - 10) + 'px';
+    })
+    .on('mouseout', () => tip.classList.add('hidden'));
 
-/** Populate textarea from uploaded CSV/TXT file */
-function loadCSV(input) {
-  const file = input.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    // Accept comma-separated or newline-separated targets
-    const text = e.target.result
-      .replace(/,/g, '\n')
-      .split('\n')
-      .map(t => t.trim())
-      .filter(t => t && t.includes(':'))
-      .join('\n');
-    document.getElementById('bulkTargets').value = text;
-  };
-  reader.readAsText(file);
-}
+  node.append('circle')
+    .attr('r', d => d.r)
+    .attr('fill', d => d.color)
+    .attr('stroke', d => d.type==='hub' ? '#F0B429' : 'rgba(255,255,255,0.2)')
+    .attr('stroke-width', d => d.type==='hub' ? 3 : 1.5)
+    .style('filter', d => d.type==='hub' ? 'url(#nGlow)' : 'none');
 
-/** Run bulk scan against all targets in the textarea */
-async function bulkScan() {
-  const raw = document.getElementById('bulkTargets').value.trim();
-  if (!raw) { alert('Please enter at least one target (host:port).'); return; }
+  node.append('text').attr('class','node-label')
+    .attr('dy', d => d.r + 11).attr('text-anchor','middle')
+    .text(d => d.label.length > 20 ? d.label.slice(0,18)+'…' : d.label);
 
-  const targets = [...new Set(
-    raw.split('\n').map(t => t.trim()).filter(t => t && t.includes(':'))
-  )].slice(0, 20);
+  node.filter(d => d.type==='hub').append('text')
+    .attr('text-anchor','middle').attr('dominant-baseline','central')
+    .attr('font-size','13px').attr('fill','#fff').text('🏦');
 
-  if (targets.length === 0) {
-    alert('No valid targets found. Each line should be host:port (e.g. google.com:443)');
-    return;
-  }
-
-  // Show progress
-  const prog    = document.getElementById('bulkProgress');
-  const bar     = document.getElementById('bulkProgressBar');
-  const txt     = document.getElementById('bulkProgressText');
-  const resDiv  = document.getElementById('bulkResults');
-
-  prog.classList.remove('hidden');
-  bar.style.width = '5%';
-  txt.textContent = `0 / ${targets.length}`;
-  resDiv.innerHTML = '';
-
-  document.getElementById('clearBulkBtn').style.display     = 'none';
-  document.getElementById('bulkDownloadBtn').style.display  = 'none';
-
-  try {
-    const res  = await authFetch('http://localhost:8080/scan/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targets }),
+  const sim = d3.forceSimulation(nodes)
+    .force('link',      d3.forceLink(links).id(d=>d.id).distance(d => d.source.type==='hub'?150:90).strength(0.6))
+    .force('charge',    d3.forceManyBody().strength(-300))
+    .force('center',    d3.forceCenter(W/2, H/2))
+    .force('collision', d3.forceCollide(d => d.r + 20))
+    .on('tick', () => {
+      link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+          .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+      node.attr('transform', d=>`translate(${d.x},${d.y})`);
     });
-    const data = await res.json();
-    _bulkData = data;
 
-    bar.style.width  = '100%';
-    txt.textContent  = `${data.total} / ${data.total}`;
-
-    renderBulkResults(data.results || []);
-
-    document.getElementById('clearBulkBtn').style.display    = 'inline-flex';
-    document.getElementById('bulkDownloadBtn').style.display = 'inline-flex';
-
-  } catch (err) {
-    resDiv.innerHTML = `<div style="color:var(--vuln);font-size:.85rem;padding:12px 0">❌ Request failed: ${err.message}</div>`;
-    bar.style.width  = '100%';
-    bar.style.background = 'var(--vuln)';
-  }
+  _networkSimulation = sim;
 }
 
-/** Render the bulk scan results as a summary table */
-function renderBulkResults(results) {
-  const vIcon  = { safe: '🟢', hybrid: '🟡', vuln: '🔴', error: '⚠️', unknown: '⚪' };
-  const vColor = { safe: 'var(--safe)', hybrid: '#f59e0b', vuln: 'var(--vuln)', error: '#ef4444', unknown: 'var(--muted)' };
+// ── GEOGRAPHIC ASSET DISTRIBUTION MAP ────────────────────────────
+async function initGeoMap() {
+  const wrap = document.getElementById('homeGeoMap');
+  if (!wrap) return;
 
-  const rows = results.map((r, i) => {
-    if (r.status === 'error') {
-      return `<tr>
-        <td style="color:var(--muted)">${i+1}</td>
-        <td style="font-weight:500">${r.target}</td>
-        <td colspan="3" style="color:var(--vuln);font-size:.8rem">⚠️ ${r.error}</td>
-      </tr>`;
-    }
-    const cbom     = r.cbom || {};
-    const asset    = (cbom.assets || [])[0] || {};
-    const tls      = (asset.protocols || [])[0] || {};
-    const cert     = (asset.certificates || [])[0] || {};
-    const keys     = (asset.keys || [])[0] || {};
+  // Pull real scan data to augment live counts
+  let scans = [];
+  try { const h = await api('GET', '/history'); scans = h.scans || []; } catch {}
 
-    const verdict  = computeVerdict(tls, cert);
-    const icon     = vIcon[verdict.cls]  || vIcon.unknown;
-    const color    = vColor[verdict.cls] || vColor.unknown;
-    const kem      = tls.selected_group  || '—';
-    const tlsVer   = tls.version         || '—';
-    const keySize  = keys.size ? `${keys.size} bits` : '—';
+  const liveCounts = { india:0, us:0, eu:0, apac:0 };
+  scans.forEach(s => {
+    const t = (s.target || '').toLowerCase();
+    if (t.includes('pnb') || t.includes('.in') || t.includes('103.') || t.includes('40.1')) liveCounts.india++;
+    else if (t.includes('cloudflare') || t.includes('google') || t.includes('.com')) liveCounts.us++;
+  });
 
-    return `<tr class="bulk-row" onclick="loadBulkDetail(${i})" title="Click to view full CBOM">
-      <td style="color:var(--muted)">${i+1}</td>
-      <td style="font-weight:600">${r.target}</td>
-      <td><span style="color:${color}">${icon} ${verdict.label}</span></td>
-      <td style="font-size:.78rem;color:var(--text)">${tlsVer} · ${kem}</td>
-      <td style="font-size:.76rem;color:var(--muted)">${keySize}</td>
-    </tr>`;
+  // ─── CRITICAL FIX: pure SVG viewBox coordinates (0-100 wide, 0-75 tall) ────
+  // NO % suffix — must match the ellipse coordinate system
+  const toX = lon => parseFloat(((lon + 180) / 360 * 100).toFixed(2));
+  const toY = lat => parseFloat(((90 - lat)  / 180 * 75 ).toFixed(2));
+
+  // Merged India into 2 well-separated regions to avoid label collision
+  const locations = [
+    { city:'India (North)', lon: 77.2,  lat: 26.0, base:128, live: liveCounts.india, color:'#D4920E' },
+    { city:'India (South)', lon: 78.5,  lat: 13.5, base: 60, live: 0,                color:'#D4920E' },
+    { city:'Silicon Valley',lon:-121.8, lat: 37.4, base: 22, live: liveCounts.us,    color:'#16A34A' },
+    { city:'Singapore',     lon:103.8,  lat:  1.4, base:  8, live: liveCounts.apac,  color:'#3B82F6' },
+    { city:'London',        lon: -0.8,  lat: 51.5, base:  4, live: liveCounts.eu,    color:'#3B82F6' },
+    { city:'Frankfurt',     lon:  9.5,  lat: 50.0, base:  5, live: 0,                color:'#7C3AED' },
+  ];
+
+  locations.forEach(l => { l.count = l.base + l.live; l.x = toX(l.lon); l.y = toY(l.lat); });
+
+  const maxC   = Math.max(...locations.map(l => l.count));
+  // Radius in viewBox units: India(North) ≈ 2.8, smallest ≈ 0.7
+  const scaleR = c => parseFloat((0.7 + (c / maxC) * 2.1).toFixed(2));
+
+  const bubbles = locations.map(l => {
+    const r  = scaleR(l.count);
+    const rP = (r + 0.7).toFixed(2);
+    const tip = `${l.city}: ${l.count} assets${l.live ? ` (incl. ${l.live} live-scanned)` : ''}`;
+    return `
+    <g class="geo-bubble" onclick="alert('${tip}')">
+      <circle cx="${l.x}" cy="${l.y}" r="${r}" fill="${l.color}" fill-opacity="0.85"/>
+      <circle cx="${l.x}" cy="${l.y}" r="${r}" fill="none" stroke="${l.color}" stroke-width="0.4" opacity="0.5">
+        <animate attributeName="r"       values="${r};${rP};${r}" dur="3s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.5;0;0.5"       dur="3s" repeatCount="indefinite"/>
+      </circle>
+      <text x="${l.x}" y="${l.y}" text-anchor="middle" dominant-baseline="central" font-size="1.05" fill="#fff" font-weight="700">${l.count}</text>
+      <text x="${l.x}" y="${l.y + r + 1.5}" text-anchor="middle" font-size="0.9" fill="rgba(255,255,255,0.75)">${l.city}</text>
+    </g>`;
   }).join('');
 
-  document.getElementById('bulkResults').innerHTML = `
-  <table class="bulk-table">
-    <thead>
-      <tr>
-        <th>#</th><th>Target</th><th>PQC Verdict</th><th>TLS / KEM</th><th>Key Size</th>
-      </tr>
-    </thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <p style="font-size:.75rem;color:var(--muted);margin-top:8px">Click any row to load its full CBOM below.</p>`;
-}
+  const total    = locations.reduce((s,l) => s+l.count, 0);
+  const indiaCnt = locations.filter(l => l.city.startsWith('India')).reduce((s,l)=>s+l.count,0);
+  const usCnt    = locations.filter(l => l.city==='Silicon Valley').reduce((s,l)=>s+l.count,0);
+  const euCnt    = locations.filter(l => ['London','Frankfurt'].includes(l.city)).reduce((s,l)=>s+l.count,0);
+  const apacCnt  = locations.filter(l => l.city==='Singapore').reduce((s,l)=>s+l.count,0);
 
-/** Load a bulk result's CBOM into the main result area */
-function loadBulkDetail(idx) {
-  if (!_bulkData || !_bulkData.results[idx]) return;
-  const r = _bulkData.results[idx];
-  if (r.status === 'error') return;
-  document.getElementById('target').value = r.target;
-  setStatus(`✅ Loaded bulk scan result for <b>${r.target}</b>`, 'success');
-  render(r.cbom);
-  window.scrollTo({ top: document.getElementById('result').offsetTop - 20, behavior: 'smooth' });
-}
-
-/** Download all bulk CBOM results as a single JSON file */
-function downloadBulkJSON() {
-  if (!_bulkData) return;
-  const blob = new Blob([JSON.stringify(_bulkData, null, 2)], { type: 'application/json' });
-  const a    = document.createElement('a');
-  a.href     = URL.createObjectURL(blob);
-  a.download = `bulk-cbom-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-/** Clear bulk results */
-function clearBulkResults() {
-  _bulkData = null;
-  document.getElementById('bulkResults').innerHTML = '';
-  document.getElementById('bulkProgress').classList.add('hidden');
-  document.getElementById('bulkProgressBar').style.width = '0%';
-  document.getElementById('clearBulkBtn').style.display    = 'none';
-  document.getElementById('bulkDownloadBtn').style.display = 'none';
-}
-
-
-/* ── 8. History & Audit Functions ───────────────────────────── */
-
-/** Toggle the history panel open/closed */
-function toggleHistory() {
-  const panel = document.getElementById('historyPanel');
-  const isHidden = panel.classList.contains('hidden');
-  panel.classList.toggle('hidden', !isHidden);
-  if (isHidden) loadHistory();
-}
-
-/** Load scan history from the backend and render it */
-async function loadHistory() {
-  const list = document.getElementById('historyList');
-  list.innerHTML = '<span style="color:var(--muted);font-size:.85rem">Loading…</span>';
-
-  try {
-    const res  = await authFetch('http://localhost:8080/history');
-    const data = await res.json();
-    const scans = data.scans || [];
-
-    if (scans.length === 0) {
-      list.innerHTML = '<span style="color:var(--muted);font-size:.85rem">No scans yet. Run your first scan above.</span>';
-      return;
-    }
-
-    list.innerHTML = scans.map(s => {
-      const vColors = { safe: '#10b981', hybrid: '#f59e0b', vuln: '#ef4444', unknown: '#6b7280' };
-      const vIcons  = { safe: '🟢', hybrid: '🟡', vuln: '🔴', unknown: '⚪' };
-      const color   = vColors[s.verdict] || vColors.unknown;
-      const icon    = vIcons[s.verdict]  || vIcons.unknown;
-      const date    = new Date(s.timestamp).toLocaleString('en-GB', { dateStyle:'short', timeStyle:'short' });
-
-      return `
-      <div class="history-item" onclick="loadHistoryScan('${s.id}', '${s.target}')" title="Click to load this scan">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-weight:600;font-size:.85rem;color:var(--text)">${s.target}</span>
-          <span style="font-size:.75rem;color:var(--muted)">${date}</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
-          <span style="font-size:.8rem;color:${color}">${icon} ${s.verdict_label}</span>
-          <span style="font-size:.72rem;color:var(--muted);margin-left:auto">${s.tls_version} · ${s.selected_group || 'classical'}</span>
-        </div>
-      </div>`;
-    }).join('');
-
-  } catch (err) {
-    list.innerHTML = `<span style="color:var(--vuln);font-size:.85rem">Failed: ${err.message}</span>`;
-  }
-}
-
-/** Re-load a historical scan result by fetching its CBOM */
-async function loadHistoryScan(id, target) {
-  document.getElementById('target').value = target;
-  setStatus(`⏳ Loading scan <b>${target}</b>…`, 'scanning');
-  document.getElementById('result').innerHTML = '';
-
-  try {
-    const res  = await authFetch(`http://localhost:8080/history/${encodeURIComponent(id)}`);
-    const data = await res.json();
-    setStatus(`✅ Loaded historical scan for <b>${target}</b>`, 'success');
-    render(data);
-  } catch (err) {
-    setStatus(`❌ Failed to load: ${err.message}`, 'error');
-  }
-}
-
-/** Open audit trail modal and load entries */
-async function openAudit() {
-  document.getElementById('auditModal').classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-  await loadAudit();
-}
-
-/** Close audit modal by clicking the overlay */
-function closeAudit(e) {
-  if (e.target.id === 'auditModal') closeAuditBtn();
-}
-function closeAuditBtn() {
-  document.getElementById('auditModal').classList.add('hidden');
-  document.body.style.overflow = '';
-}
-
-/** Fetch and render the audit log table */
-async function loadAudit() {
-  const wrap = document.getElementById('auditTableWrap');
-  wrap.innerHTML = '<span style="color:var(--muted);font-size:.85rem">Loading…</span>';
-
-  let entries = [];
-  try {
-    const data = await authFetch('http://localhost:8080/audit').then(r => r.json());
-    entries = data.entries || [];
-  } catch (err) {
-    wrap.innerHTML = `<span style="color:var(--vuln);font-size:.85rem">❌ ${err.message}</span>`;
-    return;
-  }
-
-  if (entries.length === 0) {
-    wrap.innerHTML = '<span style="color:var(--muted);font-size:.85rem">No audit entries yet.</span>';
-    return;
-  }
-
-  const statusBadge = s =>
-    s === 'OK'
-      ? `<span class="audit-badge ok">OK</span>`
-      : `<span class="audit-badge err">ERROR</span>`;
-
-  const rows = entries.map(e => `
-    <tr>
-      <td style="color:var(--muted);font-size:.72rem;white-space:nowrap">${new Date(e.timestamp).toLocaleString('en-GB',{dateStyle:'short',timeStyle:'medium'})}</td>
-      <td><span class="audit-action">${e.action}</span></td>
-      <td style="font-size:.8rem;color:var(--text);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.target}">${e.target || '—'}</td>
-      <td>${statusBadge(e.status)}</td>
-      <td style="font-size:.75rem;color:var(--muted)">${e.detail || ''}</td>
-    </tr>`).join('');
+  // Grid lines in raw viewBox coords (no %)
+  const eqY     = toY(0).toFixed(2);
+  const pmX     = toX(0).toFixed(2);
+  const tropicY = toY(23.5).toFixed(2);
 
   wrap.innerHTML = `
-  <table class="audit-table">
-    <thead>
-      <tr>
-        <th>Timestamp</th><th>Action</th><th>Target</th><th>Status</th><th>Detail</th>
-      </tr>
-    </thead>
-    <tbody>${rows}</tbody>
-  </table>`;
+    <svg class="geo-svg" viewBox="0 0 100 75" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <linearGradient id="oceanG" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%"   stop-color="#0d2d52"/>
+          <stop offset="100%" stop-color="#071022"/>
+        </linearGradient>
+      </defs>
+      <rect width="100" height="75" fill="url(#oceanG)"/>
 
-  // store for CSV export
-  window._auditEntries = entries;
+      <!-- Grid lines — raw viewBox coords -->
+      <line x1="0" y1="${eqY}"  x2="100" y2="${eqY}"  stroke="rgba(255,255,255,0.07)" stroke-width="0.2"/>
+      <line x1="${pmX}" y1="0"  x2="${pmX}" y2="75"    stroke="rgba(255,255,255,0.07)" stroke-width="0.2"/>
+      <line x1="0" y1="${tropicY}" x2="100" y2="${tropicY}" stroke="rgba(255,210,0,0.07)" stroke-width="0.15" stroke-dasharray="1,2"/>
+
+      <!-- Continents — viewBox coords, aligned with projection above -->
+      <ellipse cx="21"   cy="31"  rx="11"  ry="12.5" fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- N America -->
+      <ellipse cx="26"   cy="57"  rx="6.5" ry="10"   fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- S America -->
+      <ellipse cx="50"   cy="25"  rx="6.5" ry="6"    fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- Europe -->
+      <ellipse cx="50"   cy="45"  rx="7"   ry="12"   fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- Africa -->
+      <ellipse cx="68"   cy="20"  rx="18"  ry="6.5"  fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- Russia/C Asia -->
+      <ellipse cx="71.5" cy="37"  rx="4.5" ry="8.5"  fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- South Asia / India -->
+      <ellipse cx="81"   cy="44"  rx="3.5" ry="5.5"  fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- SE Asia -->
+      <ellipse cx="83"   cy="27"  rx="6"   ry="7"    fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- East Asia -->
+      <ellipse cx="82.5" cy="60"  rx="5.5" ry="4.5"  fill="#1a4a7a" stroke="#2a62a0" stroke-width="0.3" opacity="0.88"/><!-- Australia -->
+
+      <!-- Asset bubbles -->
+      ${bubbles}
+
+      <!-- Footnote -->
+      <text x="99" y="73.5" text-anchor="end" font-size="0.9" fill="rgba(255,255,255,0.25)">† Base counts from passive discovery + live scans</text>
+    </svg>
+    <div class="geo-stat-overlay">
+      <div class="geo-stat-chip">🌏 ${total} Assets†</div>
+      <div class="geo-stat-chip">🇮🇳 India: ${indiaCnt}</div>
+      <div class="geo-stat-chip">🇺🇸 US: ${usCnt}</div>
+      <div class="geo-stat-chip">🌍 EU: ${euCnt}</div>
+      <div class="geo-stat-chip">🇸🇬 APAC: ${apacCnt}</div>
+    </div>`;
 }
 
-/** Export audit log as CSV download */
-function downloadAuditCSV() {
-  const entries = window._auditEntries || [];
-  if (!entries.length) return;
+async function loadCBOM() {
+  let cbomSum = {};
+  try { cbomSum = await api('GET', '/cbom/summary'); } catch {}
 
-  const header = 'ID,Timestamp,Action,Target,Status,Detail';
-  const csvRows = entries.map(e =>
-    [e.id, e.timestamp, e.action,
-     `"${(e.target||'').replace(/"/g,'""')}"`,
-     e.status,
-     `"${(e.detail||'').replace(/"/g,'""')}"`
-    ].join(',')
-  );
+  document.getElementById('cbomSurveyed').textContent = cbomSum.total_surveyed || 0;
+  document.getElementById('cbomCerts').textContent    = cbomSum.active_certs    || 0;
+  document.getElementById('cbomWeak').textContent     = cbomSum.weak_crypto     || 0;
+  document.getElementById('cbomKEMs').textContent     = Object.keys(cbomSum.kem_groups || {}).length;
 
-  const blob = new Blob([[header, ...csvRows].join('\n')], { type: 'text/csv' });
-  const a    = document.createElement('a');
-  a.href     = URL.createObjectURL(blob);
-  a.download = `audit-log-${Date.now()}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  // Key length bar chart
+  const kl     = cbomSum.key_lengths || {};
+  const klKeys = Object.keys(kl).sort((a,b) => parseInt(b)-parseInt(a));
+  makeChart('cbomKeyChart', 'bar',
+    { labels: klKeys.length ? klKeys : ['No data'],
+      datasets: [{ label: 'Count', data: klKeys.map(k => kl[k]),
+        backgroundColor: ['#7B0000','#9B1212','#C0392B','#D4920E','#F0B429'] }] },
+    { plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ stepSize:1 } } } });
+
+  // Cipher list
+  renderBarList('cbomCipherList', cbomSum.cipher_usage || {});
+
+  // CA pie
+  const caDat = cbomSum.top_cas || {};
+  const caKeys = Object.keys(caDat).slice(0, 6);
+  makeChart('cbomCAChart', 'doughnut',
+    { labels: caKeys.length ? caKeys : ['No data'],
+      datasets: [{ data: caKeys.map(k => caDat[k]),
+        backgroundColor: ['#7B0000','#D4920E','#3B82F6','#16A34A','#9333EA','#EA4C3A'] }] },
+    { plugins:{ legend:{ position:'bottom', labels:{ font:{ size:11 } } } }, cutout:'55%' });
+
+  // TLS version pie
+  const tlsDat = cbomSum.tls_versions || {};
+  const tlsKeys = Object.keys(tlsDat);
+  makeChart('cbomTLSChart', 'doughnut',
+    { labels: tlsKeys.length ? tlsKeys : ['No data'],
+      datasets: [{ data: tlsKeys.map(k => tlsDat[k]),
+        backgroundColor: ['#16A34A','#3B82F6','#D97706','#DC2626'] }] },
+    { plugins:{ legend:{ position:'bottom', labels:{ font:{ size:11 } } } }, cutout:'55%' });
+
+  // KEM list
+  renderBarList('cbomKEMList', cbomSum.kem_groups || {});
 }
+
+function renderBarList(containerId, obj) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const keys = Object.keys(obj).sort((a,b) => obj[b]-obj[a]);
+  const max  = keys.length ? obj[keys[0]] : 1;
+  if (!keys.length) { el.innerHTML = '<div style="color:#888;font-size:13px;">No data yet — run some scans first.</div>'; return; }
+  el.innerHTML = keys.map(k =>
+    `<div class="cipher-item">
+      <span class="cipher-label" title="${esc(k)}">${esc(k.length>30 ? k.slice(0,30)+'…' : k)}</span>
+      <div class="cipher-bar-bg"><div class="cipher-bar" style="width:${Math.round(obj[k]/max*100)}%"></div></div>
+      <span class="cipher-count">${obj[k]}</span>
+    </div>`).join('');
+}
+
+// ── PAGE: POSTURE OF PQC ─────────────────────────────────────────
+async function loadPosture() {
+  let posture = {};
+  try { posture = await api('GET', '/posture'); } catch {}
+
+  const total = posture.total || 1;
+  const elite    = posture.elite    || 0;
+  const standard = posture.standard || 0;
+  const legacy   = posture.legacy   || 0;
+  const critical = posture.critical || 0;
+
+  const pct = n => total ? Math.round(n/total*100) : 0;
+  document.getElementById('posHeaderElite').textContent    = `Elite-PQC Ready: ${pct(elite)}%`;
+  document.getElementById('posHeaderStandard').textContent = `Standard: ${pct(standard)}%`;
+  document.getElementById('posHeaderLegacy').textContent   = `Legacy: ${pct(legacy)}%`;
+  document.getElementById('posHeaderCritical').textContent = `Critical Apps: ${critical}`;
+
+  // Grade bar chart
+  makeChart('posGradeChart', 'bar',
+    { labels: ['Elite-PQC', 'Critical', 'Standard', 'Legacy'],
+      datasets: [{ label: 'Count', data: [elite, critical, standard, legacy],
+        backgroundColor: ['#16A34A','#DC2626','#3B82F6','#D97706'] }] },
+    { plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, ticks:{ stepSize:1 } } } });
+
+  // Status donut
+  makeChart('posStatusChart', 'doughnut',
+    { labels: ['Elite-PQC', 'Standard', 'Legacy', 'Critical'],
+      datasets: [{ data: [elite, standard, legacy, critical],
+        backgroundColor: ['#16A34A','#3B82F6','#D97706','#DC2626'] }] },
+    { plugins:{ legend:{ position:'bottom', labels:{ font:{ size:11 } } } }, cutout:'60%' });
+
+  // Assets table
+  const assets = posture.assets || [];
+  const tbody  = document.getElementById('postureTableBody');
+  if (!assets.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="table-empty">No assets scanned yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = assets.map(a => {
+    const vc  = a.verdict === 'safe' ? 'badge-safe' : a.verdict === 'hybrid' ? 'badge-hybrid' : 'badge-vuln';
+    const tc  = a.tier === 'Elite-PQC' ? 'badge-elite' : a.tier === 'Standard' ? 'badge-standard' : a.tier === 'Legacy' ? 'badge-legacy' : 'badge-critical';
+    const pqc = a.verdict !== 'vuln' ? '<span style="color:#16A34A;font-size:16px;">✔</span>' : '<span style="color:#DC2626;font-size:16px;">✘</span>';
+    return `<tr>
+      <td><strong>${esc(a.target)}</strong></td>
+      <td>${esc(a.tls_version || '—')}</td>
+      <td style="font-size:11px;word-break:break-all;">${esc(a.kem_group || '—')}</td>
+      <td><span class="badge ${vc}">${esc(a.verdict_label || a.verdict)}</span></td>
+      <td><span class="badge ${tc}">${esc(a.tier)}</span></td>
+      <td>
+        <div class="score-bar-wrap">
+          <div class="score-bar-bg"><div class="score-bar" style="width:${a.score/10}%"></div></div>
+          <span style="font-size:12px;font-weight:700;">${a.score}</span>
+        </div>
+      </td>
+      <td style="text-align:center;">${pqc}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── PAGE: CYBER RATING ────────────────────────────────────────────
+async function loadRating() {
+  let rating = {};
+  try { rating = await api('GET', '/cyber-rating'); } catch {}
+
+  const score = rating.enterprise_score || 0;
+  const tier  = rating.tier || 'Legacy';
+
+  document.getElementById('ratingScore').textContent = score;
+  const badgeEl = document.getElementById('ratingTierBadge');
+  badgeEl.textContent = tier + (tier === 'Elite-PQC' ? '\nIndicates stronger security posture' : '');
+  badgeEl.className = 'rating-tier-badge ' + (tier === 'Legacy' ? 'legacy' : tier === 'Standard' ? 'standard' : '');
+
+  // Per-asset table
+  const assets = rating.assets || [];
+  const tbody  = document.getElementById('ratingTableBody');
+  if (!assets.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No assets rated yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = assets.map((a, i) => {
+    const tc = a.tier === 'Elite-PQC' ? 'badge-elite' : a.tier === 'Standard' ? 'badge-standard' : a.tier === 'Legacy' ? 'badge-legacy' : 'badge-critical';
+    return `<tr>
+      <td>${i+1}</td>
+      <td><strong>${esc(a.target)}</strong></td>
+      <td>
+        <div class="score-bar-wrap">
+          <div class="score-bar-bg"><div class="score-bar" style="width:${a.score/10}%"></div></div>
+          <strong style="font-size:13px;">${a.score}</strong>
+        </div>
+      </td>
+      <td><span class="badge ${tc}">${esc(a.tier)}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── PAGE: REPORTING ──────────────────────────────────────────────
+function loadReporting() {
+  // Set default schedule date to 1 month from now
+  const d = new Date(); d.setMonth(d.getMonth() + 1);
+  const dateEl = document.getElementById('schedDate');
+  if (dateEl) dateEl.value = d.toISOString().split('T')[0];
+}
+
+function showReportPanel(type) {
+  document.querySelectorAll('.report-panel').forEach(p => p.classList.add('hidden'));
+  document.getElementById('report-' + type).classList.remove('hidden');
+}
+
+async function generateExecReport() {
+  const status = document.getElementById('execReportStatus');
+  setStatus(status, 'loading', '⏳ Generating Executive Summary PDF…');
+  try {
+    // Gather data
+    const [stats, posture, rating] = await Promise.all([
+      api('GET', '/stats').catch(() => ({})),
+      api('GET', '/posture').catch(() => ({})),
+      api('GET', '/cyber-rating').catch(() => ({})),
+    ]);
+    generateExecPDF(stats, posture, rating);
+    setStatus(status, 'ok', '✅ PDF downloaded successfully');
+  } catch (e) {
+    setStatus(status, 'error', `❌ ${e.message}`);
+  }
+}
+
+function generateExecPDF(stats, posture, rating) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W = 210; let y = 20;
+
+  // ── Page 1: Text summary ─────────────────────────────────────────
+  // Header band
+  doc.setFillColor(123, 0, 0);
+  doc.rect(0, 0, W, 35, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22); doc.setFont('helvetica', 'bold');
+  doc.text('QuantumSentry', 14, 16);
+  doc.setFontSize(11); doc.setFont('helvetica', 'normal');
+  doc.text('PNB PQC Readiness — Executive Summary', 14, 24);
+  doc.setFontSize(9);
+  doc.text(`Generated: ${new Date().toLocaleString('en-IN')}`, 14, 31);
+  doc.text('PSB Cybersecurity Hackathon 2026', W - 14, 31, { align: 'right' });
+
+  doc.setTextColor(0, 0, 0); y = 48;
+
+  // ── KPI section ──────────────────────────────────────────────────
+  const sectionHeader = (title) => {
+    doc.setFillColor(212, 146, 14);
+    doc.rect(14, y - 2, W - 28, 0.5, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+    doc.text(title, 14, y + 4); y += 12;
+  };
+
+  sectionHeader('Enterprise KPIs');
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const total = posture.total || 1;
+  const pct   = n => total ? Math.round((n || 0) / total * 100) : 0;
+  [
+    ['Total Assets Scanned',   stats.total_scans   || 0],
+    ['Post-Quantum Safe',      stats.safe_count    || 0],
+    ['Hybrid PQ',              stats.hybrid_count  || 0],
+    ['Quantum Vulnerable',     stats.vuln_count    || 0],
+    ['TLS 1.3 Adoption',       stats.tls13_count   || 0],
+    ['Enterprise Cyber Score', (rating.enterprise_score || 0) + ' / 1000'],
+    ['Cyber Rating Tier',      rating.tier || '—'],
+  ].forEach(([k, v]) => {
+    doc.setFont('helvetica', 'bold'); doc.text(k + ':', 14, y);
+    doc.setFont('helvetica', 'normal'); doc.text(String(v), 90, y);
+    y += 6;
+  }); y += 4;
+
+  // ── Posture table ────────────────────────────────────────────────
+  sectionHeader('Posture of PQC');
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  [
+    ['Elite-PQC Ready',  pct(posture.elite)    + '%  (' + (posture.elite    || 0) + ' assets)', '#16A34A'],
+    ['Standard',         pct(posture.standard) + '%  (' + (posture.standard || 0) + ' assets)', '#3B82F6'],
+    ['Legacy',           pct(posture.legacy)   + '%  (' + (posture.legacy   || 0) + ' assets)', '#D97706'],
+    ['Critical',         (posture.critical || 0) + ' assets requiring immediate action',         '#DC2626'],
+  ].forEach(([k, v, col]) => {
+    const [r, g, b] = col.match(/\w\w/g).map(h => parseInt(h, 16));
+    doc.setFillColor(r, g, b); doc.rect(12, y - 3.5, 2, 4, 'F');
+    doc.setFont('helvetica', 'bold'); doc.text(k + ':', 17, y);
+    doc.setFont('helvetica', 'normal'); doc.text(v, 70, y);
+    y += 7;
+  }); y += 4;
+
+  // ── Recommendations ──────────────────────────────────────────────
+  sectionHeader('Priority Recommendations');
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  [
+    '1. Upgrade all endpoints to TLS 1.3 with PQC key exchange immediately.',
+    '2. Implement X25519MLKEM768 (NIST ML-KEM) for key establishment.',
+    '3. Replace weak ciphers (CBC, DES, RC4) with AES-256-GCM / ChaCha20-Poly1305.',
+    '4. Renew certificates with keys ≥ 3072-bit RSA or P-384 ECDSA.',
+    '5. Develop and execute a PQC Migration Plan per NIST SP 800-208 guidance.',
+  ].forEach(r => { doc.text(r, 14, y, { maxWidth: W - 28 }); y += 8; }); y += 4;
+
+  // ── CBOM Snapshot ────────────────────────────────────────────────
+  if (y < 240) {
+    sectionHeader('CBOM Snapshot');
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    const cbomEl = document.getElementById('cbomSurveyed');
+    const weakEl = document.getElementById('cbomWeak');
+    const certsEl = document.getElementById('cbomCerts');
+    doc.text(`Sites Surveyed: ${cbomEl?.textContent || '—'}`, 14, y); y += 6;
+    doc.text(`Active Certificates: ${certsEl?.textContent || '—'}`, 14, y); y += 6;
+    doc.text(`Weak Cryptography Instances: ${weakEl?.textContent || '—'}`, 14, y); y += 6;
+  }
+
+  // ── Page 1 footer ────────────────────────────────────────────────
+  doc.setFillColor(123, 0, 0);
+  doc.rect(0, 282, W, 15, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(8);
+  doc.text('QuantumSentry · PNB Cybersecurity Hackathon 2026 · CONFIDENTIAL — Page 1', W / 2, 290, { align: 'center' });
+
+  // ── Page 2: Charts ───────────────────────────────────────────────
+  doc.addPage();
+  doc.setFillColor(123, 0, 0);
+  doc.rect(0, 0, W, 20, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(16); doc.setFont('helvetica', 'bold');
+  doc.text('Visual Analytics — Charts & Graphs', 14, 13);
+  doc.setTextColor(0, 0, 0); y = 28;
+
+  // Helper: capture a canvas and add to PDF
+  const addChart = (canvasId, title, imgY, imgH) => {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    try {
+      const imgData = canvas.toDataURL('image/png');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+      doc.setFillColor(212, 146, 14); doc.rect(14, imgY - 2, W - 28, 0.4, 'F');
+      doc.text(title, 14, imgY + 4);
+      doc.addImage(imgData, 'PNG', 14, imgY + 8, 85, imgH);
+    } catch (_) {}
+  };
+
+  // Posture donut (page 1 loads it)
+  addChart('postureChart',   'Posture of PQC — Tier Distribution',       28, 52);
+  addChart('cbomKeyChart',   'CBOM — Key Length Distribution',            90, 52);
+  addChart('ratingBarChart', 'Cyber Rating — Score Breakdown',           152, 52);
+  addChart('cbomCAChart',    'CBOM — Top Certificate Authorities',        28, 52);
+  addChart('cbomTLSChart',   'CBOM — TLS Version Mix',                   90, 52);
+
+  // ── Page 2 footer ────────────────────────────────────────────────
+  doc.setFillColor(123, 0, 0);
+  doc.rect(0, 282, W, 15, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(8);
+  doc.text('QuantumSentry · PNB Cybersecurity Hackathon 2026 · CONFIDENTIAL — Page 2', W / 2, 290, { align: 'center' });
+
+  doc.save('QuantumSentry_Executive_Report.pdf');
+}
+
+async function generateOnDemandReport() {
+  const type   = document.getElementById('ondemandType').value;
+  const status = document.getElementById('ondemandStatus');
+  setStatus(status, 'loading', `⏳ Generating ${type} report…`);
+  try {
+    // For all on-demand types, generate executive PDF with available data
+    await generateExecReport();
+    setStatus(status, 'ok', `✅ Report downloaded`);
+  } catch (e) {
+    setStatus(status, 'error', `❌ ${e.message}`);
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function relativeTime(ts) {
+  if (!ts) return '—';
+  const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
+  if (diff < 60)   return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+function setStatus(el, type, msg) {
+  el.classList.remove('hidden');
+  const styles = {
+    loading: { bg:'#FEF9C3', fg:'#854D0E' },
+    ok:      { bg:'#D1FAE5', fg:'#065F46' },
+    error:   { bg:'#FEE2E2', fg:'#991B1B' },
+  };
+  const s = styles[type] || styles.ok;
+  el.style.background = s.bg; el.style.color = s.fg;
+  el.textContent = msg;
+}
+
+// ── Boot on load ──────────────────────────────────────────────────
+(async function init() {
+  if (TOKEN) {
+    try {
+      await bootApp();
+      return;
+    } catch {
+      TOKEN = '';
+      localStorage.removeItem('qs_token');
+    }
+  }
+})();

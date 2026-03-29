@@ -1,12 +1,55 @@
 // Package main — db.go
 //
-// This file implements the SQLite persistence layer for QuantumSentry.
-// It stores scan results and an immutable audit trail for compliance.
+// Implements the SQLite persistence layer for QuantumSentry.
+// The database file (quantumsentry.db) is auto-created in the backend
+// working directory on first startup.
 //
-// Tables:
-//   - scans      : One row per completed scan (CBOM JSON + verdict)
-//   - audit_log  : One row per API request (action, target, status, timestamp)
+// Schema
+// ──────
+//
+//	┌─────────────────────────────────────────────────────────────┐
+//	│  TABLE: scans                                               │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  id         INTEGER  PK AUTOINCREMENT                       │
+//	│  target     TEXT     "host:port" (e.g. "google.com:443")    │
+//	│  verdict    TEXT     "Post-Quantum Safe" | "Hybrid PQ …"   │
+//	│             …        | "Quantum Vulnerable"                 │
+//	│  tls_ver    TEXT     "TLS 1.3" | "TLS 1.2" | …            │
+//	│  cbom_json  TEXT     Full CBOM as a JSON string             │
+//	│  scanned_at TEXT     ISO-8601 timestamp (UTC)               │
+//	└─────────────────────────────────────────────────────────────┘
+//
+//	┌─────────────────────────────────────────────────────────────┐
+//	│  TABLE: audit_log                                           │
+//	│  ─────────────────────────────────────────────────────────  │
+//	│  id         INTEGER  PK AUTOINCREMENT                       │
+//	│  action     TEXT     "SCAN" | "BULK_SCAN" | "LOGIN" | …   │
+//	│  target     TEXT     Scan target or username                │
+//	│  status     TEXT     "OK" | "ERROR"                         │
+//	│  detail     TEXT     Extra context (role, error message)    │
+//	│  timestamp  TEXT     ISO-8601 (UTC)                         │
+//	└─────────────────────────────────────────────────────────────┘
+//
+//	┌─────────────────────────────────────────────────────────────┐
+//	│  TABLE: users  (see auth.go for schema)                     │
+//	│  id / username / password_hash / role                       │
+//	└─────────────────────────────────────────────────────────────┘
+//
+// Exported helpers
+// ────────────────
+//   - InitDB()                — open DB, run schema migrations
+//   - LogAudit(action, …)     — append to audit_log (non-blocking)
+//   - SaveScan(scan)          — insert into scans
+//   - GetScans(limit)         — fetch latest N scan summaries (no cbom_json)
+//   - GetScanByID(id)         — fetch one full scan including cbom_json
+//   - GetAuditLog(limit)      — fetch latest N audit entries
+//
+// Retention
+// ─────────
+//   No automatic pruning. For production deployments, implement a scheduled
+//   DELETE WHERE scanned_at < (NOW - 90 days) for GDPR/data-minimisation.
 package main
+
 
 import (
 	"database/sql"

@@ -1,16 +1,19 @@
 <div align="center">
 
 <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go" />
-<img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-0078D4?style=for-the-badge&logo=windows" />
 <img src="https://img.shields.io/badge/TLS-1.3-blueviolet?style=for-the-badge" />
 <img src="https://img.shields.io/badge/PQC-ML--KEM%20Ready-success?style=for-the-badge" />
 <img src="https://img.shields.io/badge/CERT--In-CBOM%20Compliant-orange?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Hackathon-PSB%202026-crimson?style=for-the-badge" />
+
+<br/><br/>
 
 # ⚛ QuantumSentry
 
-**Post-Quantum Cryptography (PQC) Readiness Scanner**
+### PQC Readiness Platform for PNB
 
-_Scan any HTTPS endpoint for quantum vulnerability. Generates audit-ready CBOM reports compliant with CERT-In SRS Annexure A._
+**A full-stack enterprise dashboard for Post-Quantum Cryptography (PQC) readiness assessment, asset discovery, CBOM generation, and compliance reporting — built for the PSB Cybersecurity Hackathon 2026.**
 
 </div>
 
@@ -18,205 +21,328 @@ _Scan any HTTPS endpoint for quantum vulnerability. Generates audit-ready CBOM r
 
 ## 📋 Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Build Instructions](#build-instructions)
-- [Default Credentials](#default-credentials)
-- [API Reference](#api-reference)
-- [CBOM Schema](#cbom-schema)
-- [Role-Based Access Control](#role-based-access-control)
-- [Project Structure](#project-structure)
-- [Troubleshooting](#troubleshooting)
+- [Overview](#-overview)
+- [Features & Modules](#-features--modules)
+- [Architecture](#-architecture)
+- [Repository Structure](#-repository-structure)
+- [Prerequisites](#-prerequisites)
+- [Quick Start](#-quick-start)
+- [Build Instructions](#-build-instructions)
+- [Configuration](#-configuration)
+- [Default Credentials & RBAC](#-default-credentials--rbac)
+- [API Reference](#-api-reference)
+- [CBOM Schema](#-cbom-schema)
+- [Data Sources & Transparency](#-data-sources--transparency)
+- [Troubleshooting](#-troubleshooting)
+- [Roadmap](#-roadmap)
 
 ---
 
-## Overview
+## 🔍 Overview
 
-QuantumSentry is a network-level TLS inspection tool built for the **PSB Cybersecurity Hackathon 2026**. It captures live TLS handshakes using raw packet capture (Npcap/libpcap), extracts cryptographic parameters, and generates a **Cryptographic Bill of Materials (CBOM)** fully compliant with CERT-In's SRS Annexure A specification.
+QuantumSentry is an enterprise-grade **Post-Quantum Cryptography Readiness Platform** designed to help the Punjab National Bank (PNB) assess, monitor, and remediate cryptographic vulnerabilities before the quantum computing threat materialises.
 
-The dashboard allows teams to:
-- Assess whether an endpoint uses quantum-safe key exchange (ML-KEM, X25519MLKEM768)
-- Get actionable remediation recommendations with config commands
-- Track scan history over time in a SQLite database
-- Maintain an immutable audit trail for compliance
-- Run bulk scans across multiple targets concurrently
-- Export results as JSON or PDF "Quantum Safety Certificates"
+The system performs **live TLS handshake inspection** via raw packet capture (Npcap), extracts cryptographic parameters, and feeds them into a 7-module analytics dashboard. All scan data is persisted to SQLite and surfaced through aggregated compliance dashboards aligned with CERT-In's SRS Annexure A specification.
 
----
-
-## Features
-
-| Feature | Description |
-|---|---|
-| 🔍 **Live TLS Inspection** | Raw packet capture via Npcap, extracts KEM groups, cipher suites, TLS version |
-| 📋 **CBOM Generation** | Full Cryptographic Bill of Materials — algorithms, protocols, certificates, keys |
-| 🏛️ **Annexure A Compliant** | `asset_type`, OIDs, key lifecycle, certificate format — all per CERT-In schema |
-| 🟢🟡🔴 **PQC Verdict Engine** | Classifies endpoints as Post-Quantum Safe / Hybrid PQ / Quantum Vulnerable |
-| 🔧 **Recommendations** | Severity-coded actionable remediation steps with exact config commands |
-| 📥 **Export** | Download CBOM as JSON or generate a PDF "Quantum Safety Certificate" |
-| ⚡ **Bulk Scanning** | Scan up to 20 targets concurrently (3 at a time), with CSV/TXT upload |
-| 🕑 **Scan History** | SQLite-backed persistent history, click any row to reload past results |
-| 📋 **Audit Trail** | Every API action logged automatically; viewable/exportable as CSV |
-| 🔐 **JWT Authentication** | Bcrypt-hashed passwords, HS256 JWT tokens, 24-hour TTL |
-| 👥 **RBAC** | 3 roles — Admin, Auditor, Viewer — each with controlled endpoint access |
-
----
-
-## Architecture
+### What it does at a glance
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Browser / Frontend                       │
-│          index.html · script.js · style.css (Vanilla JS)        │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ HTTP (localhost:8080)
-                            │ Authorization: Bearer <JWT>
-┌───────────────────────────▼─────────────────────────────────────┐
-│                     Backend (Go / Gin)                          │
-│  main.go · auth.go · db.go                                      │
-│  REST API:  /auth/login  /scan  /scan/bulk                      │
-│             /history     /audit                                  │
-│  SQLite DB: scans · audit_log · users                           │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ subprocess exec
-┌───────────────────────────▼─────────────────────────────────────┐
-│                     Scanner (Go / Npcap)                        │
-│  main.go                                                        │
-│  cbom/  →  types.go · algorithms.go · builder.go · utils.go    │
-│  Raw TLS handshake capture → CBOM JSON output (stdout)          │
-└─────────────────────────────────────────────────────────────────┘
+Scan endpoint → Extract TLS parameters → Build CBOM → 
+Compute PQC verdict → Aggregate into dashboards → Generate PDF report
 ```
-
-**Data flow — single scan:**
-1. Frontend sends `GET /scan?target=google.com:443` with Bearer token
-2. Backend validates JWT → invokes `scanner.exe google.com:443`
-3. Scanner dials TLS + captures raw packets → prints CBOM JSON to stdout
-4. Backend parses CBOM, computes PQC verdict, persists to SQLite
-5. Raw CBOM JSON returned to frontend → dashboard renders results
 
 ---
 
-## Prerequisites
+## 🏛️ Features & Modules
+
+The platform is a **Single-Page Application (SPA)** with 7 modules accessible via a PNB-branded sidebar:
+
+### 1. 🏠 Home Dashboard
+- **Enterprise KPI row** — total assets, safe/hybrid/vulnerable counts, expiring certs, high-risk
+- **PQC Posture donut chart** — Elite / Standard / Legacy / Critical tier breakdown
+- **CBOM Key-Length bar** — distribution of public key sizes across all scanned assets
+- **IP Version breakdown** — IPv4 vs IPv6 adoption
+- **Certificate Expiry timeline** — certs expiring in 30 / 90 days
+- **Nameserver Records** — live PNB domain DNS data
+- **Geographic Asset Distribution map** — SVG world map with animated bubbles per region (India, US, EU, APAC)
+- **Recent Scans feed** — last 5 scans with live verdicts
+
+### 2. 📦 Asset Inventory
+- Full table of all scanned assets with PQC verdict, TLS version, cipher suite, key size, cert expiry
+- KPI row: total assets, PQC-safe count, expiring-soon count, critical count
+- Click any row to open a CBOM detail modal
+- **Re-scan All** bulk action button
+
+### 3. 🔍 Asset Discovery
+- **Domains tab** — Discovered PNB subdomains (passive DNS / certificate transparency)
+- **SSL tab** — SSL certificates with SHA fingerprint, validity, CA
+- **IP / Subnets tab** — IP addresses with ASN, netblock, geolocation
+- **Software tab** — Fingerprinted web servers and software versions
+- **Network Map tab** — Interactive D3.js force-directed topology graph (PNB Hub → domain/IP nodes, coloured by PQC status)
+- Global search bar + status filter buttons (New / False Positive / Confirmed)
+
+> ⚠️ **Demo Note:** The Domains, SSL, IP, and Software tabs display representative discovery data (as would be collected by passive DNS enumeration, certificate transparency logs, and Shodan in a live deployment). The Network Map and all real-time scan data are fully live from the backend engine.
+
+### 4. 📋 CBOM Dashboard
+Aggregated Cryptographic Bill of Materials across **all** scanned assets:
+- KPI row: Sites Surveyed, Active Certs, Weak Crypto instances, Distinct KEM Groups
+- **Key Length Distribution** bar chart
+- **Cipher Suite Usage** ranked list
+- **Top Certificate Authorities** doughnut chart
+- **Encryption Protocols** (TLS 1.1 / 1.2 / 1.3) doughnut chart
+- **KEM Groups** ranked list
+
+### 5. 🛡️ Posture of PQC
+- **Tier classification** — all assets mapped to Elite-PQC / Standard / Legacy / Critical
+- Progress bars per tier with percentage and asset count
+- Full asset table with compliance grade, cert expiry, recommended action
+- Improvement recommendations panel
+
+### 6. ⭐ Cyber Rating
+- **Enterprise score 0–1000** computed from weighted tier distribution
+- Score tier badge: Legacy (<400), Standard (400–700), Elite-PQC (>700)
+- **PQC Tier Thresholds** table with compliance criteria per tier
+- **Per-Asset PQC Scores** table with individual scores
+
+### 7. 📊 Reporting
+Three report types accessible via clickable tiles:
+- **Executive Summary** — generates a 2-page PDF with KPIs, posture data, recommendations, and embedded Chart.js charts
+- **Scheduled Reporting** — configure frequency (daily/weekly/monthly), asset selection, sections to include, and delivery options (email, save path, download link)
+- **On-Demand Reporting** — request any report type (Executive, CBOM, Posture, Cyber Rating) with format and delivery options
+
+---
+
+## 🏗️ Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Browser / Frontend (Vanilla JS)                   │
+│   index.html   script.js   style.css                                 │
+│   ├── Auth (JWT login/logout, role-based UI gating)                  │
+│   ├── SPA Router (7 pages, no page reload)                           │
+│   ├── Chart.js — KPI charts, donut, bar, timeline                   │
+│   ├── D3.js   — Force-directed network topology graph                │
+│   ├── jsPDF   — 2-page executive PDF with embedded chart images      │
+│   └── SVG     — Geographic asset distribution world map              │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ HTTP REST (localhost:8080)
+                               │ Authorization: Bearer <JWT>
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                     Backend API Server (Go / Gin)                    │
+│   main.go      — Route registration, static file serving             │
+│   auth.go      — JWT (HS256), bcrypt passwords, RBAC middleware      │
+│   db.go        — SQLite schema migrations, query helpers             │
+│   aggregate.go — Analytical endpoints (/stats, /cbom/summary, etc.)  │
+│                                                                      │
+│   SQLite DB: scans · audit_log · users                               │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ subprocess (os/exec)
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                     Scanner Engine (Go / Npcap)                      │
+│   main.go      — TLS dialer + raw packet capture                     │
+│   cbom/        — CERT-In Annexure A CBOM builder                     │
+│     types.go        Schema types                                     │
+│     algorithms.go   OID registry, algorithm/protocol parsing         │
+│     builder.go      Assembles CBOM from TLS session data             │
+│     input.go        CLI argument parsing                             │
+│     utils.go        Scan ID generation helpers                       │
+│   utility/     — Npcap interface enumeration                         │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Data flow — single scan request:**
+1. Frontend sends `GET /scan?target=host:port` with `Authorization: Bearer <token>`
+2. Backend validates JWT → invokes `scanner.exe host:port` as subprocess
+3. Scanner dials TLS connection + captures raw Npcap packets → prints CBOM JSON to stdout
+4. Backend parses CBOM, computes PQC verdict, persists record to SQLite, logs to audit trail
+5. CBOM JSON returned to frontend → rendered across Dashboard, Inventory, CBOM, Posture, Cyber Rating
+
+---
+
+## 📁 Repository Structure
+
+```
+QuantumSentry/
+│
+├── README.md                       ← You are here
+├── .gitignore
+│
+├── scanner/                        ← TLS inspection engine (Go)
+│   ├── main.go                     # Entry: TLS dial + Npcap capture + CBOM output
+│   ├── cbom/
+│   │   ├── types.go                # CERT-In Annexure A schema structs
+│   │   ├── algorithms.go           # OID registry, cipher/KEM parsing
+│   │   ├── builder.go              # Assembles CBOM from captured TLS data
+│   │   ├── input.go                # CLI flag parsing (target, iface)
+│   │   └── utils.go                # Scan ID, timestamp helpers
+│   ├── utility/                    # Npcap interface lister helper
+│   ├── go.mod
+│   └── go.sum
+│
+├── backend/                        ← REST API server (Go / Gin)
+│   ├── main.go                     # Route registration, static serving, scan handler
+│   ├── auth.go                     # JWT minting/validation, bcrypt, RBAC middleware
+│   ├── db.go                       # SQLite init, schema migrations, query helpers
+│   ├── aggregate.go                # Analytical APIs: /stats /cbom/summary /posture /cyber-rating
+│   ├── go.mod
+│   ├── go.sum
+│   ├── server.exe                  # Pre-built Windows binary (run as Administrator)
+│   └── quantumsentry.db            # SQLite DB (auto-created on first run)
+│
+└── frontend/                       ← SPA dashboard (Vanilla JS)
+    ├── index.html                  # App shell: login modal, sidebar nav, 7 page sections
+    ├── script.js                   # SPA router, auth, data fetching, charts, maps, PDF
+    └── style.css                   # PNB red/gold design system, dark cards, animations
+```
+
+---
+
+## ⚙️ Prerequisites
 
 | Dependency | Version | Notes |
 |---|---|---|
-| **Go** | 1.22+ | [golang.org/dl](https://golang.org/dl/) |
-| **Npcap** | Latest | [npcap.com](https://npcap.com/) — install in WinPcap API-compatible mode |
-| **Git** | Any | For cloning |
-| **Admin / root** | Required | Raw packet capture needs elevated privileges |
-| **Windows** | 10/11 | Linux supported too (use `libpcap-dev`) |
+| **Go** | 1.22+ | [golang.org/dl](https://golang.org/dl/) — needed to build from source |
+| **Npcap** | Latest | [npcap.com](https://npcap.com/) — install with **WinPcap API-compatible mode** checked |
+| **Administrator rights** | Required | Raw packet capture requires elevated privileges |
+| **Windows** | 10 / 11 | Linux also supported (use `libpcap-dev` instead of Npcap) |
+| **Modern browser** | Chrome / Edge / Firefox | Required for SVG animations and D3.js |
 
-> **Note:** On Windows, Npcap must be installed with _"Install Npcap in WinPcap API-compatible Mode"_ checked. The scanner **must be run as Administrator**.
+> **Important (Windows):** Npcap must be installed with _"Install Npcap in WinPcap API-compatible Mode"_ checked. The server and scanner must be run from an **Administrator** terminal.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
+
+### Option A — Use Pre-built Binaries (Fastest)
 
 ```powershell
-# 1. Clone the repo
+# Run as Administrator
+cd QuantumSentry\backend
+.\server.exe
+```
+
+Open **http://localhost:8080** → Login: `admin` / `QuantumSentry@Admin2026`
+
+---
+
+### Option B — Build from Source
+
+```powershell
+# 1. Clone the repository
 git clone https://github.com/yuvrajn05/QuantumSentry.git
 cd QuantumSentry
 
-# 2. Build the scanner (run as Administrator)
+# 2. Build the scanner (run as Administrator — required for Npcap)
 cd scanner
 go build -o scanner.exe .
 
 # 3. Build the backend
-cd ../backend
+cd ..\backend
 go build -o server.exe .
 
-# 4. Start the server (run as Administrator)
+# 4. Start the server (must remain in the backend\ directory)
 .\server.exe
 ```
 
 Open **http://localhost:8080** in your browser.
 
-Login with: `admin` / `QuantumSentry@Admin2026`
-
 ---
-
-## Build Instructions
-
-### Scanner
-
-```powershell
-cd scanner
-go build -o scanner.exe .
-```
-
-The scanner binary must be placed at `scanner/scanner.exe` (relative to the backend). The backend invokes it as `../scanner/scanner.exe`.
-
-**Run the scanner manually (for testing):**
-
-```powershell
-# Run as Administrator
-.\scanner.exe google.com:443
-```
-
-This prints the full CBOM JSON to stdout.
-
-### Backend
-
-```powershell
-cd backend
-go build -o server.exe .
-.\server.exe
-```
-
-On first startup, the server:
-- Creates `quantumsentry.db` (SQLite database)
-- Runs schema migrations (creates `scans`, `audit_log`, `users` tables)
-- Seeds 3 default user accounts
-
-The server listens on **port 8080**.
 
 ### Linux / macOS
 
 ```bash
+# Build scanner
 cd scanner && go build -o scanner .
+
+# Build backend
 cd ../backend && go build -o server .
-sudo ./server   # sudo required for raw packet capture
+
+# Run (sudo required for raw packet capture)
+sudo ./server
 ```
 
 ---
 
-## Default Credentials
+## 🔧 Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `QS_JWT_SECRET` | `qs-pqc-secret-2026-change-in-prod` | JWT signing secret — **always set this in production** |
+| `PORT` | `8080` | Server listen port |
+
+**Set the JWT secret before deploying:**
+```powershell
+# Windows
+$env:QS_JWT_SECRET = "your-strong-random-64-char-secret"
+.\server.exe
+
+# Linux / macOS
+QS_JWT_SECRET="your-strong-random-64-char-secret" ./server
+```
+
+### Interface Selection (Windows)
+
+If the scanner cannot auto-detect the network interface, use the interface lister:
+```powershell
+cd iface_lister
+.\iface_lister.exe        # Lists all Npcap interfaces with their GUIDs
+```
+
+Then run a scan targeting a specific interface (advanced use — normally not required).
+
+---
+
+## 🔐 Default Credentials & RBAC
 
 | Username | Password | Role | Permissions |
 |---|---|---|---|
-| `admin` | `QuantumSentry@Admin2026` | **Admin** | Full access: scan, bulk scan, history, audit |
-| `auditor` | `QuantumSentry@Audit2026` | **Auditor** | Read-only: history, audit trail (no scanning) |
-| `viewer` | `QuantumSentry@View2026` | **Viewer** | Scan only: run scans, see results |
+| `admin` | `QuantumSentry@Admin2026` | **Admin** | Full access: scan, bulk scan, history, audit, aggregated dashboards |
+| `auditor` | `QuantumSentry@Audit2026` | **Auditor** | Read-only: history, audit trail, all dashboards (no scanning) |
+| `viewer` | `QuantumSentry@View2026` | **Viewer** | Scan only: run scans, see results (no history/audit) |
 
-> ⚠️ **Change these passwords before any public deployment.**
+> ⚠️ **Change all passwords before any public or production deployment.**
+
+### RBAC Matrix
+
+```
+Endpoint                    admin   auditor   viewer
+──────────────────────────────────────────────────────
+POST /auth/login              ✓       ✓         ✓
+GET  /auth/me                 ✓       ✓         ✓
+GET  /scan                    ✓       ✗         ✓
+POST /scan/bulk               ✓       ✗         ✓
+GET  /history                 ✓       ✓         ✗
+GET  /history/:id             ✓       ✓         ✗
+GET  /audit                   ✓       ✓         ✗
+GET  /stats                   ✓       ✓         ✗
+GET  /cbom/summary            ✓       ✓         ✗
+GET  /posture                 ✓       ✓         ✗
+GET  /cyber-rating            ✓       ✓         ✗
+```
 
 ---
 
-## API Reference
+## 📡 API Reference
 
 All endpoints except `/auth/login` require:
-```
+```http
 Authorization: Bearer <jwt_token>
 ```
 
 ### Authentication
 
-| Method | Endpoint | Role | Description |
+| Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/login` | Public | Login, returns JWT token |
-| `GET` | `/auth/me` | Any | Returns current user info from JWT |
+| `POST` | `/auth/login` | Public | Validate credentials, returns JWT |
+| `GET` | `/auth/me` | Any role | Returns username + role from JWT |
 
-**Login request:**
 ```json
-POST /auth/login
+// POST /auth/login
 { "username": "admin", "password": "QuantumSentry@Admin2026" }
-```
 
-**Login response:**
-```json
+// Response
 { "token": "eyJ...", "username": "admin", "role": "admin" }
 ```
 
@@ -224,17 +350,14 @@ POST /auth/login
 
 | Method | Endpoint | Role | Description |
 |---|---|---|---|
-| `GET` | `/scan?target=host:port` | admin, viewer | Single TLS scan, returns CBOM JSON |
-| `POST` | `/scan/bulk` | admin, viewer | Bulk scan up to 20 targets |
+| `GET` | `/scan?target=host:port` | admin, viewer | Single TLS scan → CBOM JSON |
+| `POST` | `/scan/bulk` | admin, viewer | Scan up to 20 targets (3 concurrent) |
 
-**Bulk scan request:**
 ```json
-POST /scan/bulk
+// POST /scan/bulk
 { "targets": ["google.com:443", "cloudflare.com:443", "github.com:443"] }
-```
 
-**Bulk scan response:**
-```json
+// Response
 {
   "total": 3,
   "results": [
@@ -249,15 +372,24 @@ POST /scan/bulk
 
 | Method | Endpoint | Role | Description |
 |---|---|---|---|
-| `GET` | `/history` | admin, auditor | Last 50 scans (no CBOM blob) |
-| `GET` | `/history/:id` | admin, auditor | Full CBOM for a single scan |
+| `GET` | `/history` | admin, auditor | Last 50 scan summaries |
+| `GET` | `/history/:id` | admin, auditor | Full CBOM for a specific scan |
 | `GET` | `/audit` | admin, auditor | Last 200 audit log entries |
+
+### Aggregation APIs (Dashboard)
+
+| Method | Endpoint | Role | Description |
+|---|---|---|---|
+| `GET` | `/stats` | admin, auditor | Home dashboard KPIs |
+| `GET` | `/cbom/summary` | admin, auditor | Cipher, key-length, CA, TLS version distributions |
+| `GET` | `/posture` | admin, auditor | PQC tier breakdown (Elite/Standard/Legacy/Critical) |
+| `GET` | `/cyber-rating` | admin, auditor | Enterprise score + per-asset scores |
 
 ---
 
-## CBOM Schema
+## 📄 CBOM Schema
 
-QuantumSentry generates a **Cryptographic Bill of Materials** fully compliant with the CERT-In SRS Annexure A schema.
+QuantumSentry generates a **Cryptographic Bill of Materials** fully compliant with CERT-In SRS Annexure A:
 
 ```json
 {
@@ -320,88 +452,92 @@ QuantumSentry generates a **Cryptographic Bill of Materials** fully compliant wi
 }
 ```
 
----
+### PQC Verdict Logic
 
-## Role-Based Access Control
-
-```
-Admin   ──► /scan  /scan/bulk  /history  /history/:id  /audit
-Auditor ──►                    /history  /history/:id  /audit
-Viewer  ──► /scan  /scan/bulk
-```
-
-**UI enforcement:**
-- Auditors see the History and Audit Log buttons but **Scan buttons are disabled**
-- Viewers can scan but will not see History/Audit buttons
-- All tokens expire after 24 hours and the login modal reappears automatically
+| Verdict | Condition |
+|---|---|
+| 🟢 **Post-Quantum Safe** | KEM group contains `MLKEM` or `Kyber`; TLS 1.3 |
+| 🟡 **Hybrid PQ — Partially Safe** | KEM group is `X25519MLKEM768`, `X25519Kyber768`; TLS 1.3 |
+| 🔴 **Quantum Vulnerable** | No PQC KEM group; any TLS version |
 
 ---
 
-## Project Structure
+## 🗃️ Data Sources & Transparency
 
-```
-QuantumSentry/
-│
-├── scanner/                    # Go — TLS scanner binary
-│   ├── main.go                 # Entry point: TLS dial + pcap capture
-│   ├── cbom/                   # CBOM generation package
-│   │   ├── types.go            # Schema types (Annexure A compliant)
-│   │   ├── algorithms.go       # OID registry, algorithm/protocol parsing
-│   │   ├── builder.go          # Assembles CBOM from TLS session data
-│   │   ├── input.go            # CLI argument parsing
-│   │   └── utils.go            # Shared helpers (scan ID generation)
-│   ├── utility/                # Network interface utilities
-│   ├── go.mod
-│   └── go.sum
-│
-├── backend/                    # Go — REST API server (Gin)
-│   ├── main.go                 # Routes, auth middleware, scan invocation
-│   ├── auth.go                 # JWT auth, bcrypt, RBAC middleware
-│   ├── db.go                   # SQLite schema, scans/audit/users tables
-│   ├── go.mod
-│   └── go.sum
-│
-├── frontend/                   # Vanilla JS dashboard
-│   ├── index.html              # SPA shell, login + audit modals
-│   ├── script.js               # Dashboard logic, auth, render, bulk scan
-│   └── style.css               # Dark-mode design system
-│
-├── iface_lister/               # Helper: list Npcap network interfaces
-│
-├── .gitignore
-└── README.md
-```
+| Module | Data Source | Notes |
+|---|---|---|
+| Asset Inventory | ✅ **100% live** — SQLite scan history | Real scans only |
+| CBOM Dashboard | ✅ **100% live** — aggregated scan data | All metrics from real scans |
+| Posture of PQC | ✅ **100% live** — computed from verdicts | |
+| Cyber Rating | ✅ **100% live** — weighted scoring algorithm | |
+| Discovery: Domains / SSL / IP / Software | ⚠️ **Representative data** | As would be collected by passive DNS, cert transparency, Shodan |
+| Discovery: Network Map | ✅ **Live scan hosts** + topology | Hub topology is representative |
+| Geographic Map | ⚠️ **Base counts estimated** + live scans added | `†` footnote shown in UI |
+
+The Asset Discovery tabs display a clearly labelled **"Demo Discovery Dataset"** banner explaining the data source. All real-time scanning data feeds directly from the backend.
 
 ---
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 
-### Scanner produces no output / `pcap` error
+### Scanner produces no output / `pcap open` error
 - **Cause:** Npcap not installed, or not running as Administrator
-- **Fix:** Run PowerShell/terminal as Administrator, verify Npcap is installed in WinPcap-compatible mode
+- **Fix:** Open PowerShell as Administrator. Verify Npcap is installed with WinPcap-compatible mode enabled.
 
 ### `listen tcp :8080: bind: address already in use`
-- **Cause:** Previous server instance still running
-- **Fix:** `Stop-Job | Remove-Job` or kill the process on port 8080
+- **Cause:** Previous `server.exe` instance still running
+- **Fix:** In PowerShell: `Get-Process server | Stop-Process -Force`
 
-### `401 Unauthorized` from API
-- **Cause:** Missing or expired JWT token
-- **Fix:** Sign out and sign back in; tokens expire after 24 hours
+### `401 Unauthorized` on all API calls
+- **Cause:** JWT token missing or expired (24-hour TTL)
+- **Fix:** Sign out and sign back in from the UI
 
 ### Scan returns `error: exit status 1`
-- **Cause:** Scanner binary not found at `../scanner/scanner.exe` relative to backend working directory
-- **Fix:** Ensure you built the scanner (`go build -o scanner.exe .` in `scanner/`) and the backend is run from the `backend/` directory
+- **Cause:** `scanner.exe` not found at `../scanner/scanner.exe` (relative to `backend/`)
+- **Fix:** Ensure you built the scanner with `go build -o scanner.exe .` inside the `scanner/` directory and run the backend server from inside `backend/`
 
-### `Interface not found` on Windows
-- **Cause:** Npcap interface GUID not auto-detected
-- **Fix:** Run `iface_lister/iface_lister.exe` to list available interfaces and pass it via `--iface` flag
+### Interface not auto-detected (Windows)
+- **Cause:** Npcap interface GUID not discoverable automatically
+- **Fix:** Run `iface_lister/iface_lister.exe` to list all available interfaces; note the GUID of your active Ethernet/Wi-Fi adapter
+
+### Charts appear empty / no data
+- **Cause:** No scans in the database yet
+- **Fix:** Navigate to Asset Inventory → click **Re-scan All**, or use the Quick Scan widget on the Home dashboard to scan `google.com:443`
+
+---
+
+## 🗺️ Roadmap
+
+| Priority | Item | Status |
+|---|---|---|
+| 🔴 High | HTTPS / TLS on the server itself | Planned |
+| 🔴 High | SMTP delivery for scheduled reports | Planned |
+| 🟡 Medium | Background cron job for daily auto-scans | Planned |
+| 🟡 Medium | Shodan / passive DNS API integration for live discovery | Planned |
+| 🟡 Medium | Real-time scan progress via WebSocket | Planned |
+| 🟢 Low | Multi-tenant / organisation support | Future |
+| 🟢 Low | SAML/SSO integration | Future |
+
+---
+
+## 📚 References
+
+- [NIST SP 800-208](https://csrc.nist.gov/publications/detail/sp/800-208/final) — Recommendation for Stateful Hash-Based Signature Schemes
+- [NIST PQC Standards](https://csrc.nist.gov/projects/post-quantum-cryptography) — ML-KEM (CRYSTALS-Kyber), ML-DSA, SLH-DSA
+- [CERT-In SRS](https://www.cert-in.org.in/) — Security Requirements Specification for CBOM
+- [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) — The Transport Layer Security (TLS) Protocol Version 1.3
+- [Npcap](https://npcap.com/) — Windows packet capture library
 
 ---
 
 <div align="center">
 
-**Built for PSB Cybersecurity Hackathon 2026**
+**Built for the PSB Cybersecurity Hackathon 2026**
 
 _QuantumSentry — Securing India's banking infrastructure for the post-quantum era_
+
+[![PNB](https://img.shields.io/badge/PNB-PQC%20Ready-crimson?style=flat-square)](https://www.pnbindia.in/)
+[![CERT-In](https://img.shields.io/badge/CERT--In-Annexure%20A-orange?style=flat-square)](https://www.cert-in.org.in/)
+[![NIST](https://img.shields.io/badge/NIST-ML--KEM%20Aligned-blue?style=flat-square)](https://csrc.nist.gov/projects/post-quantum-cryptography)
 
 </div>

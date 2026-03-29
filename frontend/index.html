@@ -1,165 +1,658 @@
+<!--
+  QuantumSentry — PNB PQC Readiness Platform
+  index.html  ·  SPA Shell
+  PSB Cybersecurity Hackathon 2026
+
+  This file is the single HTML shell for the entire application.
+  All content sections (Home, Inventory, Discovery, CBOM, Posture,
+  Cyber Rating, Reporting) are rendered inside <main id="pageContent">
+  and toggled via CSS .hidden / script.js routing logic.
+
+  Key structural regions:
+   ├─ #loginOverlay      — Full-screen login modal (shown when no JWT)
+   ├─ #auditModal        — Audit log drawer (admin/auditor only)
+   ├─ #appShell          — Main app wrapper (hidden until authenticated)
+   │   ├─ <nav>          — Sidebar with 7 module links + sign-out
+   │   ├─ <header>       — Top bar: page title + user badge
+   │   └─ <main>         — Page content regions (one per module)
+   │       ├─ #page-home
+   │       ├─ #page-inventory
+   │       ├─ #page-discovery
+   │       ├─ #page-cbom
+   │       ├─ #page-posture
+   │       ├─ #page-rating
+   │       └─ #page-reporting
+   └─ #cbomModal         — CBOM detail modal (inventory row click)
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>QuantumSentry — PQC Readiness Scanner</title>
-  <meta name="description" content="Post-Quantum Cryptography readiness scanner. Analyse TLS connections and certificates for quantum vulnerability." />
+  <meta name="author" content="QuantumSentry Team — PSB Hackathon 2026" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>QuantumSentry — PNB PQC Readiness Platform</title>
+  <meta name="description" content="PNB Post-Quantum Cryptography Readiness Platform — Asset Discovery, CBOM Generation, PQC Posture & Cyber Rating — PSB Cybersecurity Hackathon 2026" />
+
+  <!-- Google Fonts: Inter — Modern, clean sans-serif -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
-  <!-- jsPDF for PDF certificate export -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js v4.4.0 — KPI charts, donut, bar, timeline -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- jsPDF v2.5.1 — 2-page executive PDF with embedded chart images -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- D3.js v7.9.0 — Force-directed network topology graph -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
 
-  <!-- Background -->
-  <div class="bg-grid"></div>
-
-  <!-- Header -->
-  <header class="header">
-    <div class="header-inner">
-      <div class="logo">
-        <span class="logo-icon">⚛</span>
-        <div>
-          <span class="logo-title">QuantumSentry</span>
-          <span class="logo-sub">PQC Readiness Scanner</span>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;">
-        <button class="export-btn" onclick="toggleHistory()" id="historyBtn" title="View scan history">🕑 History</button>
-        <button class="export-btn" onclick="openAudit()"   id="auditBtn"   title="View audit trail">📋 Audit Log</button>
-        <div class="header-badge">
-          <span class="pulse"></span>
-          Live Scanner
-        </div>
+<!-- ═══════════════════════════════════════════════════════════ LOGIN MODAL -->
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-card">
+    <div class="login-logo-bar">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e2/Punjab_National_Bank.svg/200px-Punjab_National_Bank.svg.png"
+           alt="PNB" class="login-pnb-img" onerror="this.style.display='none'" />
+      <div class="login-brand">
+        <div class="login-brand-main">QuantumSentry</div>
+        <div class="login-brand-sub">PNB PQC Readiness Platform</div>
       </div>
     </div>
-  </header>
-
-  <!-- Main -->
-  <main class="main">
-
-    <!-- Hero -->
-    <section class="hero">
-      <h1 class="hero-title">Is your TLS <span class="gradient-text">quantum-safe</span>?</h1>
-      <p class="hero-sub">Scan any HTTPS endpoint to analyse its cryptographic posture against post-quantum threats. Generates a full CBOM report.</p>
-    </section>
-
-    <!-- Scan Input -->
-    <section class="scan-box">
-      <div class="scan-input-row">
-        <div class="input-wrap">
-          <span class="input-icon">🌐</span>
-          <input id="target" type="text" placeholder="example.com:443" autocomplete="off" spellcheck="false" />
-        </div>
-        <button id="scanBtn" onclick="scan()">
-          <span id="btnText">Scan</span>
-          <span id="btnLoader" class="btn-loader hidden"></span>
-        </button>
-      </div>
-      <div class="quick-targets">
-        <span class="qt-label">Quick:</span>
-        <button class="qt-btn" onclick="quickScan('google.com:443')">google.com</button>
-        <button class="qt-btn" onclick="quickScan('cloudflare.com:443')">cloudflare.com</button>
-        <button class="qt-btn" onclick="quickScan('github.com:443')">github.com</button>
-      </div>
-    </section>
-
-    <!-- Bulk Scan Section -->
-    <section class="bulk-box" id="bulkBox">
-      <div class="bulk-header" onclick="toggleBulk()">
-        <span>⚡ Bulk Scan <span class="bulk-badge">Multi-target</span></span>
-        <span id="bulkChevron" style="font-size:.8rem;color:var(--muted)">▼ expand</span>
-      </div>
-      <div id="bulkBody" class="hidden">
-        <p class="bulk-hint">Enter one <code>host:port</code> per line (max 20). Scans run 3 at a time.</p>
-        <textarea id="bulkTargets" class="bulk-textarea"
-          placeholder="google.com:443&#10;cloudflare.com:443&#10;github.com:443"
-          rows="5" spellcheck="false"></textarea>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
-          <button class="scan-btn-bulk" onclick="bulkScan()">⚡ Run Bulk Scan</button>
-          <label class="export-btn" style="cursor:pointer;" title="Upload CSV/TXT of targets">
-            📂 Upload CSV
-            <input type="file" accept=".csv,.txt" id="csvUpload" style="display:none" onchange="loadCSV(this)" />
-          </label>
-          <button class="export-btn" onclick="downloadBulkJSON()" id="bulkDownloadBtn" style="display:none">⬇ Export JSON</button>
-          <button class="export-btn" onclick="clearBulkResults()" id="clearBulkBtn" style="display:none">✕ Clear</button>
-        </div>
-        <!-- Progress -->
-        <div id="bulkProgress" class="bulk-progress hidden">
-          <div class="bulk-progress-bar" id="bulkProgressBar" style="width:0%"></div>
-          <span id="bulkProgressText" class="bulk-progress-text">0 / 0</span>
-        </div>
-        <!-- Results table -->
-        <div id="bulkResults"></div>
-      </div>
-    </section>
-
-    <!-- Status -->
-    <div id="status" class="status-bar hidden"></div>
-
-    <!-- History Panel (collapsible) -->
-    <div id="historyPanel" class="history-panel hidden">
-      <div class="history-header">
-        <span>🕑 Scan History</span>
-        <button class="export-btn" onclick="loadHistory()">↺ Refresh</button>
-      </div>
-      <div id="historyList" class="history-list">
-        <span style="color:var(--muted);font-size:.85rem">Loading…</span>
-      </div>
-    </div>
-
-    <!-- Results -->
-    <div id="result"></div>
-
-  </main>
-
-  <script src="script.js"></script>
-
-  <!-- Login Modal -->
-  <div id="loginModal" class="modal-overlay" style="z-index:2000;">
-    <div class="modal-box" style="max-width:420px;">
-      <div style="text-align:center;margin-bottom:24px;">
-        <div style="font-size:2rem;margin-bottom:8px">⛛️</div>
-        <div style="font-size:1.2rem;font-weight:700;color:var(--text)">QuantumSentry</div>
-        <div style="font-size:.8rem;color:var(--muted);margin-top:4px">Sign in to continue</div>
-      </div>
+    <div class="login-hackathon">PSB Hackathon Series · PNB Cybersecurity Hackathon 2026</div>
+    <div class="login-form">
+      <label class="login-label">Email / Username</label>
+      <input id="loginUser" class="login-input" type="text" placeholder="hackathon_user@pnb.bank.in" autocomplete="username" />
+      <label class="login-label">Password</label>
+      <input id="loginPass" class="login-input" type="password" placeholder="••••••••••" autocomplete="current-password" />
       <div id="loginError" class="login-error hidden"></div>
-      <div class="login-field">
-        <label class="login-label">Username</label>
-        <input id="loginUser" type="text" class="login-input" placeholder="admin" autocomplete="username" />
-      </div>
-      <div class="login-field">
-        <label class="login-label">Password</label>
-        <input id="loginPass" type="password" class="login-input" placeholder="••••••••" autocomplete="current-password" />
-      </div>
-      <button class="scan-btn-bulk" style="width:100%;margin-top:8px;padding:12px" onclick="doLogin()" id="loginBtn">Sign In</button>
-      <div style="margin-top:16px;padding:12px;background:var(--bg-soft);border-radius:8px;font-size:.75rem;color:var(--muted);">
-        <strong style="color:var(--text)">Default accounts:</strong><br/>
-        admin / QuantumSentry@Admin2026<br/>
-        auditor / QuantumSentry@Audit2026<br/>
-        viewer / QuantumSentry@View2026
-      </div>
+      <button id="loginBtn" class="login-btn" onclick="doLogin()">Sign In</button>
+    </div>
+    <div class="login-hint">
+      <span>admin / QuantumSentry@Admin2026</span> &nbsp;·&nbsp;
+      <span>auditor / QuantumSentry@Audit2026</span> &nbsp;·&nbsp;
+      <span>viewer / QuantumSentry@View2026</span>
     </div>
   </div>
+</div>
 
-  <!-- Audit Log Modal -->
-  <div id="auditModal" class="modal-overlay hidden" onclick="closeAudit(event)">
-    <div class="modal-box">
-      <div class="modal-header">
-        <span>📋 Audit Trail</span>
-        <div style="display:flex;gap:8px;">
-          <button class="export-btn" onclick="downloadAuditCSV()" title="Export audit log as CSV">⬇ CSV</button>
-          <button class="export-btn" onclick="closeAuditBtn()" style="color:#ef4444">✕ Close</button>
+<!-- ════════════════════════════════════════════════════ APP SHELL (post-login) -->
+<div id="appShell" class="app-shell hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-shield">🛡️</div>
+      <div>
+        <div class="sidebar-brand">QuantumSentry</div>
+        <div class="sidebar-tagline">PQC-Ready PNB</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a class="nav-item active" id="nav-home"      onclick="navigate('home')"       href="#">
+        <span class="nav-icon">🏠</span><span>Home</span>
+      </a>
+      <a class="nav-item" id="nav-inventory"        onclick="navigate('inventory')"  href="#">
+        <span class="nav-icon">📋</span><span>Asset Inventory</span>
+      </a>
+      <a class="nav-item" id="nav-discovery"        onclick="navigate('discovery')"  href="#">
+        <span class="nav-icon">🔍</span><span>Asset Discovery</span>
+      </a>
+      <a class="nav-item" id="nav-cbom"             onclick="navigate('cbom')"       href="#">
+        <span class="nav-icon">📊</span><span>CBOM</span>
+      </a>
+      <a class="nav-item" id="nav-posture"          onclick="navigate('posture')"    href="#">
+        <span class="nav-icon">🛡️</span><span>Posture of PQC</span>
+      </a>
+      <a class="nav-item" id="nav-rating"           onclick="navigate('rating')"     href="#">
+        <span class="nav-icon">⭐</span><span>Cyber Rating</span>
+      </a>
+      <a class="nav-item" id="nav-reporting"        onclick="navigate('reporting')"  href="#">
+        <span class="nav-icon">📄</span><span>Reporting</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user" id="sidebarUser"></div>
+      <button class="sidebar-signout" id="sidebarSignout" onclick="doLogout()">Sign Out</button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <div class="main-wrap">
+    <!-- TOP HEADER BAR -->
+    <header class="top-header">
+      <div class="header-title" id="headerTitle">Home</div>
+      <div class="header-right">
+        <span class="header-badge" id="headerRole"></span>
+        <span class="header-user" id="headerUser">Welcome User</span>
+      </div>
+    </header>
+
+    <!-- PAGE CONTENT -->
+    <main class="page-content">
+
+      <!-- ══════════════════════════════════════════════════ PAGE: HOME -->
+      <div id="page-home" class="page active">
+        <div class="kpi-row" id="homeKpiRow">
+          <div class="kpi-card blue" onclick="navigate('inventory')">
+            <div class="kpi-icon">📋</div>
+            <div class="kpi-label">Total Assets</div>
+            <div class="kpi-value" id="kpiTotal">—</div>
+          </div>
+          <div class="kpi-card green" onclick="navigate('posture')">
+            <div class="kpi-icon">🟢</div>
+            <div class="kpi-label">PQC Safe</div>
+            <div class="kpi-value" id="kpiSafe">—</div>
+          </div>
+          <div class="kpi-card yellow" onclick="navigate('posture')">
+            <div class="kpi-icon">🟡</div>
+            <div class="kpi-label">Hybrid PQ</div>
+            <div class="kpi-value" id="kpiHybrid">—</div>
+          </div>
+          <div class="kpi-card red" onclick="navigate('posture')">
+            <div class="kpi-icon">🔴</div>
+            <div class="kpi-label">Vulnerable</div>
+            <div class="kpi-value" id="kpiVuln">—</div>
+          </div>
+          <div class="kpi-card purple" onclick="navigate('cbom')">
+            <div class="kpi-icon">🔐</div>
+            <div class="kpi-label">TLS 1.3</div>
+            <div class="kpi-value" id="kpiTLS13">—</div>
+          </div>
+          <div class="kpi-card orange" onclick="navigate('rating')">
+            <div class="kpi-icon">⭐</div>
+            <div class="kpi-label">Cyber Score</div>
+            <div class="kpi-value" id="kpiScore">—</div>
+          </div>
+        </div>
+
+        <div class="home-grid">
+          <!-- Quick Scan -->
+          <div class="home-card scan-card">
+            <h3 class="card-title">⚡ Quick Scan</h3>
+            <div class="scan-row">
+              <input id="homeTarget" class="scan-input" type="text" placeholder="hostname:port  e.g. google.com:443" />
+              <button id="homeScanBtn" class="btn-primary" onclick="homeRunScan()">Scan</button>
+            </div>
+            <div id="homeScanStatus" class="scan-status hidden"></div>
+          </div>
+          <!-- Posture summary -->
+          <div class="home-card">
+            <h3 class="card-title">🛡️ Posture of PQC</h3>
+            <div style="max-height:170px;"><canvas id="homePostureChart"></canvas></div>
+          </div>
+          <!-- CBOM / TLS summary -->
+          <div class="home-card">
+            <h3 class="card-title">📊 CBOM Overview</h3>
+            <div style="max-height:170px;"><canvas id="homeTLSChart"></canvas></div>
+          </div>
+
+          <!-- IPv4 / IPv6 Breakdown -->
+          <div class="home-card">
+            <h3 class="card-title">🌐 IP Version Breakdown</h3>
+            <div style="max-height:150px;"><canvas id="homeIPChart"></canvas></div>
+            <div id="homeIPStats" class="ip-stat-row"></div>
+          </div>
+          <!-- Certificate Expiry Timeline -->
+          <div class="home-card">
+            <h3 class="card-title">📅 Certificate Expiry</h3>
+            <div id="homeCertExpiry" class="expiry-list"></div>
+          </div>
+          <!-- Nameserver Records -->
+          <div class="home-card">
+            <h3 class="card-title">🗂️ Nameserver Records</h3>
+            <div class="table-wrap">
+              <table class="data-table ns-compact">
+                <thead><tr><th>Domain</th><th>Nameserver</th><th>Type</th></tr></thead>
+                <tbody id="homeNSBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Geographic Asset Distribution Map -->
+          <div class="home-card span3">
+            <h3 class="card-title">🗺️ Geographic Asset Distribution</h3>
+            <div id="homeGeoMap" class="geo-map-wrap">
+              <!-- SVG world map injected here by JS -->
+            </div>
+          </div>
+
+          <!-- Recent Scans — full width -->
+          <div class="home-card span3">
+            <h3 class="card-title">🕑 Recent Scans</h3>
+            <div id="homeRecentScans" class="recent-list"></div>
+          </div>
         </div>
       </div>
-      <p style="font-size:.78rem;color:var(--muted);margin:0 0 12px">All API actions are automatically logged for compliance traceability.</p>
-      <div id="auditTableWrap" class="audit-table-wrap">
-        <span style="color:var(--muted);font-size:.85rem">Loading…</span>
-      </div>
-    </div>
-  </div>
 
+      <!-- ══════════════════════════════════════════════ PAGE: ASSET INVENTORY -->
+      <div id="page-inventory" class="page">
+        <div class="kpi-row">
+          <div class="kpi-card blue"><div class="kpi-icon">🌐</div><div class="kpi-label">Total Scanned</div><div class="kpi-value" id="invTotal">—</div></div>
+          <div class="kpi-card green"><div class="kpi-icon">✅</div><div class="kpi-label">PQC Safe</div><div class="kpi-value" id="invSafe">—</div></div>
+          <div class="kpi-card yellow"><div class="kpi-icon">🔰</div><div class="kpi-label">Hybrid PQ</div><div class="kpi-value" id="invHybrid">—</div></div>
+          <div class="kpi-card red"><div class="kpi-icon">⚠️</div><div class="kpi-label">Vulnerable</div><div class="kpi-value" id="invVuln">—</div></div>
+          <div class="kpi-card orange"><div class="kpi-icon">⏰</div><div class="kpi-label">Expiring &lt;90d</div><div class="kpi-value" id="invExpiring">—</div></div>
+        </div>
+        <!-- Scan trigger -->
+        <div class="card mb-4">
+          <div class="card-header-row">
+            <h3 class="card-title">Scan New Asset</h3>
+            <button class="btn-scan-all" id="scanAllBtn" onclick="invScanAll()">🔄 Re-scan All Assets</button>
+          </div>
+          <div class="scan-row">
+            <input id="invTarget" class="scan-input" type="text" placeholder="hostname:port" />
+            <button class="btn-primary" onclick="invRunScan()">+ Add &amp; Scan</button>
+            <label class="btn-secondary" style="cursor:pointer;">
+              📂 Bulk CSV
+              <input type="file" id="invBulkFile" accept=".csv,.txt" style="display:none" onchange="invBulkUpload(event)" />
+            </label>
+          </div>
+          <div id="invScanStatus" class="scan-status hidden"></div>
+        </div>
+
+        <!-- Asset table -->
+        <div class="card">
+          <div class="card-header-row">
+            <h3 class="card-title">Asset Inventory</h3>
+            <input id="invSearch" class="search-input" type="text" placeholder="Search…" oninput="invFilter()" />
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="invTable">
+              <thead>
+                <tr>
+                  <th>Asset Name</th><th>Last Scanned</th><th>TLS</th>
+                  <th>KEM Group</th><th>PQC Verdict</th><th>Risk</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="invTableBody"><tr><td colspan="7" class="table-empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════ PAGE: ASSET DISCOVERY -->
+      <div id="page-discovery" class="page">
+        <!-- Demo data notice -->
+        <div style="display:flex;align-items:center;gap:10px;background:#FEF9C3;border:1px solid #D97706;border-radius:8px;padding:9px 14px;margin-bottom:12px;font-size:12px;color:#854D0E;">
+          <span style="font-size:16px;">&#9432;</span>
+          <span><strong>Demo Discovery Dataset</strong> — The Domains, SSL, IP and Software tabs below show representative data as would be collected by passive DNS enumeration, certificate transparency logs and Shodan in a live deployment. The <strong>Network Map</strong> tab and <strong>Real-time Scan</strong> data (Inventory, CBOM, Posture, Cyber Rating) are fully live from the backend engine.</span>
+        </div>
+        <div class="search-bar-wrap">
+          <input id="discSearch" class="disc-search" type="text" placeholder="🔍  Search domain, URL, IoC or other…" />
+          <button class="btn-primary" onclick="discDoSearch()">Search</button>
+        </div>
+        <div class="tab-bar disc-tabs">
+          <button class="tab-btn active" id="disc-tab-domains"  onclick="discTab('domains')">Domains (7)</button>
+          <button class="tab-btn"        id="disc-tab-ssl"      onclick="discTab('ssl')">SSL (3)</button>
+          <button class="tab-btn"        id="disc-tab-ip"       onclick="discTab('ip')">IP / Subnets (6)</button>
+          <button class="tab-btn"        id="disc-tab-software" onclick="discTab('software')">Software (6)</button>
+          <button class="tab-btn"        id="disc-tab-network"  onclick="discTab('network')">&#128200; Network Map</button>
+        </div>
+        <div id="disc-domains" class="disc-panel active">
+          <div class="filter-row">
+            <button class="filter-btn active" onclick="discFilter(this,'domains','new')">New (5)</button>
+            <button class="filter-btn" onclick="discFilter(this,'domains','fp')">False Positive (10)</button>
+            <button class="filter-btn" onclick="discFilter(this,'domains','confirmed')">Confirmed (2)</button>
+            <button class="filter-btn" onclick="discFilter(this,'domains','all')">All (20)</button>
+          </div>
+          <div class="table-wrap"><table class="data-table"><thead><tr>
+            <th>Detection Date</th><th>Domain Name</th><th>Registration Date</th><th>Registrar</th><th>Company</th>
+          </tr></thead><tbody id="disc-domains-body"></tbody></table></div>
+        </div>
+        <div id="disc-ssl" class="disc-panel">
+          <div class="filter-row">
+            <button class="filter-btn active" onclick="discFilter(this,'ssl','new')">New (3)</button>
+            <button class="filter-btn" onclick="discFilter(this,'ssl','fp')">False / Ignore (9)</button>
+            <button class="filter-btn" onclick="discFilter(this,'ssl','confirmed')">Confirmed</button>
+            <button class="filter-btn" onclick="discFilter(this,'ssl','all')">All (15)</button>
+          </div>
+          <div class="table-wrap"><table class="data-table"><thead><tr>
+            <th>Detection Date</th><th>SHA Fingerprint</th><th>Valid From</th><th>Common Name</th><th>Company</th><th>CA</th>
+          </tr></thead><tbody id="disc-ssl-body"></tbody></table></div>
+        </div>
+        <div id="disc-ip" class="disc-panel">
+          <div class="filter-row">
+            <button class="filter-btn active" onclick="discFilter(this,'ip','new')">New (15)</button>
+            <button class="filter-btn" onclick="discFilter(this,'ip','fp')">False or Ignore (10)</button>
+            <button class="filter-btn" onclick="discFilter(this,'ip','confirmed')">Confirmed (9)</button>
+            <button class="filter-btn" onclick="discFilter(this,'ip','all')">All (34)</button>
+          </div>
+          <div class="table-wrap"><table class="data-table"><thead><tr>
+            <th>Detection Date</th><th>IP Address</th><th>Ports</th><th>Subnet</th><th>ASN</th><th>Location</th><th>Company</th>
+          </tr></thead><tbody id="disc-ip-body"></tbody></table></div>
+        </div>
+        <div id="disc-software" class="disc-panel">
+          <div class="filter-row">
+            <button class="filter-btn active" onclick="discFilter(this,'software','new')">New (10)</button>
+            <button class="filter-btn" onclick="discFilter(this,'software','fp')">False or Ignore (6)</button>
+            <button class="filter-btn" onclick="discFilter(this,'software','confirmed')">Confirmed (36)</button>
+            <button class="filter-btn" onclick="discFilter(this,'software','all')">All (52)</button>
+          </div>
+          <div class="table-wrap"><table class="data-table"><thead><tr>
+            <th>Detection Date</th><th>Product</th><th>Version</th><th>Type</th><th>Port</th><th>Host</th><th>Company</th>
+          </tr></thead><tbody id="disc-software-body"></tbody></table></div>
+        </div>
+        <!-- Network Map Panel -->
+        <div id="disc-network" class="disc-panel">
+          <div class="network-map-container">
+            <div class="network-legend">
+              <span class="nl-item"><span class="nl-dot" style="background:#16A34A"></span>PQC Safe</span>
+              <span class="nl-item"><span class="nl-dot" style="background:#D97706"></span>Hybrid PQ</span>
+              <span class="nl-item"><span class="nl-dot" style="background:#DC2626"></span>Vulnerable</span>
+              <span class="nl-item"><span class="nl-dot" style="background:#3B82F6"></span>Domain</span>
+              <span class="nl-item"><span class="nl-dot" style="background:#7B0000"></span>Hub</span>
+            </div>
+            <div id="networkTooltip" class="network-tooltip hidden"></div>
+            <svg id="networkSVG" class="network-svg"></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════ PAGE: CBOM -->
+      <div id="page-cbom" class="page">
+        <div class="kpi-row">
+          <div class="kpi-card blue"><div class="kpi-icon">🌐</div><div class="kpi-label">Sites Surveyed</div><div class="kpi-value" id="cbomSurveyed">—</div></div>
+          <div class="kpi-card green"><div class="kpi-icon">🔒</div><div class="kpi-label">Active Certs</div><div class="kpi-value" id="cbomCerts">—</div></div>
+          <div class="kpi-card red"><div class="kpi-icon">⚠️</div><div class="kpi-label">Weak Crypto</div><div class="kpi-value" id="cbomWeak">—</div></div>
+          <div class="kpi-card yellow"><div class="kpi-icon">🔑</div><div class="kpi-label">KEM Groups</div><div class="kpi-value" id="cbomKEMs">—</div></div>
+        </div>
+        <div class="chart-grid">
+          <div class="card">
+            <h3 class="card-title">Key Length Distribution</h3>
+            <canvas id="cbomKeyChart" height="200"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Cipher Suite Usage</h3>
+            <div id="cbomCipherList" class="cipher-list"></div>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Top Certificate Authorities</h3>
+            <canvas id="cbomCAChart" height="200"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Encryption Protocols</h3>
+            <canvas id="cbomTLSChart" height="200"></canvas>
+          </div>
+        </div>
+        <div class="card mt-4">
+          <h3 class="card-title">KEM Group Distribution</h3>
+          <div id="cbomKEMList" class="cipher-list"></div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════ PAGE: POSTURE OF PQC -->
+      <div id="page-posture" class="page">
+        <div class="posture-header-bar" id="postureHeaderBar">
+          <span id="posHeaderElite">Elite-PQC Ready: —%</span>
+          <span id="posHeaderStandard">Standard: —%</span>
+          <span id="posHeaderLegacy">Legacy: —%</span>
+          <span id="posHeaderCritical">Critical Apps: —</span>
+        </div>
+        <div class="chart-grid">
+          <div class="card">
+            <h3 class="card-title">Assets by Classification Grade</h3>
+            <canvas id="posGradeChart" height="230"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Application Status</h3>
+            <canvas id="posStatusChart" height="230"></canvas>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Risk Overview</h3>
+            <div class="risk-matrix" id="riskMatrix">
+              <div class="risk-cell high">High Risk</div>
+              <div class="risk-cell high">High Risk</div>
+              <div class="risk-cell medium">Medium Risk</div>
+              <div class="risk-cell medium">Medium Risk</div>
+              <div class="risk-cell medium">Medium Risk</div>
+              <div class="risk-cell safe">Safe</div>
+              <div class="risk-cell safe">Safe</div>
+              <div class="risk-cell safe">Safe</div>
+              <div class="risk-cell safe">Safe</div>
+            </div>
+            <div class="risk-legend">
+              <span><span class="dot-high"></span> High Risk</span>
+              <span><span class="dot-medium"></span> Medium Risk</span>
+              <span><span class="dot-safe"></span> Safe/No Risk</span>
+            </div>
+          </div>
+        </div>
+        <div class="card mt-4">
+          <div class="card-header-row">
+            <h3 class="card-title">Asset PQC Compliance</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr>
+                <th>Asset Name</th><th>TLS Version</th><th>KEM Group</th>
+                <th>PQC Verdict</th><th>Tier</th><th>Score</th><th>PQC Support</th>
+              </tr></thead>
+              <tbody id="postureTableBody"><tr><td colspan="7" class="table-empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="recs-panel" id="postureRecs">
+            <h4>⚡ Improvement Recommendations</h4>
+            <div class="rec-item">
+              <span class="rec-icon warn">⚠️</span>
+              Upgrade to TLS 1.3 with PQC — Remove TLS 1.0/1.1 support immediately.
+            </div>
+            <div class="rec-item">
+              <span class="rec-icon info">🔵</span>
+              Implement ML-KEM (Kyber) for Key Exchange — Configure X25519MLKEM768 hybrid.
+            </div>
+            <div class="rec-item">
+              <span class="rec-icon info">🔵</span>
+              Update Cryptographic Libraries — Upgrade OpenSSL/BoringSSL to PQC-enabled builds.
+            </div>
+            <div class="rec-item">
+              <span class="rec-icon ok">✅</span>
+              Develop PQC Migration Plan — Create a phased roadmap per NIST PQC guidance.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════ PAGE: CYBER RATING -->
+      <div id="page-rating" class="page">
+        <div class="rating-hero card">
+          <h3 class="card-title">Consolidated Enterprise-Level Cyber-Rating Score</h3>
+          <div class="rating-score-row">
+            <div class="rating-score-box" id="ratingScoreBox">
+              <span id="ratingScore">—</span><span class="rating-max">/1000</span>
+            </div>
+            <div class="rating-tier-badge" id="ratingTierBadge">—</div>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="card">
+            <h3 class="card-title">PQC Tier Thresholds</h3>
+            <table class="data-table tier-table">
+              <thead><tr><th>Status</th><th>PQC Rating For Enterprise</th></tr></thead>
+              <tbody>
+                <tr><td><span class="tier-dot legacy"></span> Legacy</td><td class="italic">&lt; 400</td></tr>
+                <tr><td><span class="tier-dot standard"></span> Standard</td><td class="italic">400 till 700</td></tr>
+                <tr><td><span class="tier-dot elite"></span> Elite-PQC</td><td class="italic">&gt; 700</td></tr>
+                <tr><td>Maximum Score (normalised)</td><td class="italic bold">1000</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Tier Details</h3>
+            <table class="data-table tier-detail-table">
+              <thead><tr><th>Tier</th><th>Security Level</th><th>Compliance Criteria</th><th>Priority/Action</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td class="tier-elite">Tier-1 Elite</td>
+                  <td>Modern best-practice crypto posture</td>
+                  <td>TLS 1.3 only; AES-GCM / ChaCha20; Forward Secrecy; cert &gt;2048-bit; no known vulns; HSTS</td>
+                  <td>Maintain configuration; periodic monitoring</td>
+                </tr>
+                <tr>
+                  <td class="tier-standard">Tier-2 Standard</td>
+                  <td>Acceptable enterprise configuration</td>
+                  <td>TLS 1.2 supported but legacy allowed; Key&gt;2048-bit; strong ciphers; forward secrecy optional</td>
+                  <td>Improve gradually; disable legacy protocols</td>
+                </tr>
+                <tr>
+                  <td class="tier-legacy">Tier-3 Legacy</td>
+                  <td>Weak but still operational</td>
+                  <td>TLS 1.0/1.1 enabled; weak ciphers (CBC, 3DES); forward secrecy missing; key possibly 1024-bit</td>
+                  <td>Remediation required; upgrade TLS stack</td>
+                </tr>
+                <tr>
+                  <td class="tier-critical">Critical</td>
+                  <td>Insecure / exploitable</td>
+                  <td>SSL v2/v3; key &lt;1024-bit; weak ciphers (&lt;112-bit); known vulnerabilities</td>
+                  <td>Immediate action — block or isolate service</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card mt-4">
+          <h3 class="card-title">Per-Asset PQC Scores</h3>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>#</th><th>URL / Target</th><th>PQC Score</th><th>Tier</th></tr></thead>
+              <tbody id="ratingTableBody"><tr><td colspan="4" class="table-empty">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════ PAGE: REPORTING -->
+      <div id="page-reporting" class="page">
+        <div class="report-type-row">
+          <div class="report-type-card" onclick="showReportPanel('exec')">
+            <div class="report-type-icon">📊</div>
+            <div class="report-type-label">Executives Reporting</div>
+          </div>
+          <div class="report-type-card" onclick="showReportPanel('scheduled')">
+            <div class="report-type-icon">📅</div>
+            <div class="report-type-label">Scheduled Reporting</div>
+          </div>
+          <div class="report-type-card" onclick="showReportPanel('ondemand')">
+            <div class="report-type-icon">📈</div>
+            <div class="report-type-label">On-Demand Reporting</div>
+          </div>
+        </div>
+
+        <!-- Executive -->
+        <div id="report-exec" class="report-panel hidden">
+          <div class="card">
+            <h3 class="card-title">📊 Executive Summary Report</h3>
+            <p class="report-desc">Generates a high-level PDF overview of the organisation's PQC posture, suitable for board-level presentation.</p>
+            <button class="btn-primary" onclick="generateExecReport()">📄 Generate PDF</button>
+            <div id="execReportStatus" class="scan-status hidden"></div>
+          </div>
+        </div>
+
+        <!-- Scheduled -->
+        <div id="report-scheduled" class="report-panel hidden">
+          <div class="card sched-card">
+            <div class="sched-header"><span class="report-type-icon-sm">📅</span><h3 class="card-title">Schedule Reporting</h3>
+              <label class="toggle-label"><input type="checkbox" id="schedEnabled" checked /><span class="toggle-slider"></span> Enable Schedule</label>
+            </div>
+            <div class="sched-grid">
+              <div class="sched-col">
+                <label class="form-label">Report Type</label>
+                <select class="form-select" id="schedType">
+                  <option>Executive Summary Report</option>
+                  <option>CBOM Report</option>
+                  <option>Posture of PQC Report</option>
+                  <option>Cyber Rating Report</option>
+                </select>
+                <label class="form-label">Frequency</label>
+                <select class="form-select" id="schedFreq">
+                  <option>Weekly</option><option>Monthly</option><option>Daily</option>
+                </select>
+                <label class="form-label">Select Assets</label>
+                <select class="form-select">
+                  <option>All Assets</option>
+                </select>
+                <label class="form-label">Include Sections</label>
+                <div class="checkbox-row">
+                  <label><input type="checkbox" checked /> Discovery</label>
+                  <label><input type="checkbox" checked /> Inventory</label>
+                  <label><input type="checkbox" checked /> CBOM</label>
+                  <label><input type="checkbox" checked /> PQC Posture</label>
+                  <label><input type="checkbox" checked /> Cyber Rating</label>
+                </div>
+              </div>
+              <div class="sched-col">
+                <label class="form-label">📅 Schedule Details</label>
+                <label class="form-sublabel">Date</label>
+                <input class="form-input" type="date" id="schedDate" />
+                <label class="form-sublabel">Time</label>
+                <input class="form-input" type="time" id="schedTime" value="09:00" />
+                <label class="form-sublabel">Time Zone: Asia/Kolkata</label>
+                <label class="form-label mt-2">📧 Delivery Options</label>
+                <label><input type="checkbox" checked /> Email <input class="form-input-sm" type="text" placeholder="executives@org.com" /></label>
+                <label><input type="checkbox" checked /> Save to Location <code>/Reports/Quarterly/</code></label>
+                <label><input type="checkbox" /> Download Link</label>
+                <button class="btn-primary mt-3" onclick="alert('Schedule saved!')">Schedule Report →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- On-Demand -->
+        <div id="report-ondemand" class="report-panel hidden">
+          <div class="card">
+            <div class="sched-header"><span class="report-type-icon-sm">📈</span><h3 class="card-title">On-Demand Reporting</h3></div>
+            <p class="report-desc">Request reports as needed</p>
+            <div class="sched-grid">
+              <div class="sched-col">
+                <label class="form-label">Report Type</label>
+                <select class="form-select" id="ondemandType">
+                  <option value="executive">Executive Reporting</option>
+                  <option value="cbom">CBOM</option>
+                  <option value="posture">Posture of PQC</option>
+                  <option value="rating">Cyber Rating (Tiers 1–4)</option>
+                </select>
+                <label class="form-label mt-2">Advanced Settings</label>
+                <div class="adv-row">
+                  <label class="form-sublabel">File Format</label>
+                  <select class="form-select-sm"><option>PDF</option><option>JSON</option></select>
+                </div>
+                <label><input type="checkbox" checked /> Include Charts</label>
+                <label><input type="checkbox" /> Password Protect</label>
+              </div>
+              <div class="sched-col">
+                <label class="form-label">📧 Delivery Options</label>
+                <label><input type="checkbox" checked id="ondemandEmail" /> Send via Email</label>
+                <input class="form-input" type="text" placeholder="Enter Email Addresses" />
+                <label><input type="checkbox" checked /> Save to Location</label>
+                <code>/Reports/OnDemand/</code>
+                <label><input type="checkbox" /> Download Link</label>
+                <label><input type="checkbox" /> Slack Notification</label>
+                <button class="btn-primary mt-3" onclick="generateOnDemandReport()">📊 Generate Report</button>
+              </div>
+            </div>
+            <div id="ondemandStatus" class="scan-status hidden"></div>
+          </div>
+        </div>
+      </div>
+
+    </main><!-- /page-content -->
+  </div><!-- /main-wrap -->
+</div><!-- /appShell -->
+
+<!-- ══════════════════════════════════ CBOM DETAIL MODAL (from inventory click) -->
+<div id="cbomModal" class="modal-overlay hidden" onclick="closeCBOMModal(event)">
+  <div class="modal-box large" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="cbomModalTitle">CBOM Detail</h3>
+      <button class="modal-close" onclick="closeCBOMModal()">✕</button>
+    </div>
+    <div id="cbomModalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/script.js"></script>
 </body>
 </html>

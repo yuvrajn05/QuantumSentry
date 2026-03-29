@@ -189,6 +189,22 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"entries": entries})
 	})
+
+	// ── GET /stats ──────────────────────────────────────────────────────
+	// Returns high-level KPI counters for the Home dashboard.
+	protected.GET("/stats", RequireRole("admin", "auditor", "viewer"), handleStats)
+
+	// ── GET /cbom/summary ───────────────────────────────────────────────
+	// Returns aggregated cipher, key-length, CA, and TLS version data.
+	protected.GET("/cbom/summary", RequireRole("admin", "auditor", "viewer"), handleCBOMSummary)
+
+	// ── GET /posture ────────────────────────────────────────────────────
+	// Returns PQC compliance tier breakdown across all scanned assets.
+	protected.GET("/posture", RequireRole("admin", "auditor", "viewer"), handlePosture)
+
+	// ── GET /cyber-rating ───────────────────────────────────────────────
+	// Returns enterprise-level 0-1000 cyber rating + per-target scores.
+	protected.GET("/cyber-rating", RequireRole("admin", "auditor", "viewer"), handleCyberRating)
 	} // end protected group
 
 	r.Run(":8080")

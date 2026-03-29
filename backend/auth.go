@@ -18,6 +18,7 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -27,8 +28,17 @@ import (
 )
 
 // jwtSecret is the signing key for JWT tokens.
-// In production this should be loaded from an environment variable.
-var jwtSecret = []byte("qs-pqc-secret-2026-change-in-prod")
+// Set the QS_JWT_SECRET environment variable in production.
+// Falls back to a development default if the variable is not set.
+func getJWTSecret() []byte {
+	if s := os.Getenv("QS_JWT_SECRET"); s != "" {
+		return []byte(s)
+	}
+	return []byte("qs-pqc-secret-2026-change-in-prod")
+}
+
+var jwtSecret = getJWTSecret()
+
 
 // ── User model ────────────────────────────────────────────────────────────────
 
