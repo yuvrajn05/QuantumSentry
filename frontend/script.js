@@ -1251,11 +1251,18 @@ function renderBarList(containerId, obj) {
   el.innerHTML = keys.map(k => {
     const pct = Math.round(obj[k] / max * 100);
     return `
-    <div class="cipher-item">
-      <span class="cipher-label" title="${esc(k)}">${esc(k)}</span>
-      <div class="cipher-row">
-        <div class="cipher-bar-bg"><div class="cipher-bar" style="width:${pct}%"></div></div>
-        <span class="cipher-count">${obj[k]}</span>
+    <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:2px;">
+      <span style="font-size:11px;font-family:'Courier New',monospace;font-weight:600;
+                   color:#6B7280;word-break:break-all;white-space:normal;line-height:1.4;"
+            title="${esc(k)}">${esc(k)}</span>
+      <div style="display:flex;align-items:center;gap:8px;width:100%;">
+        <div style="flex:1;min-width:40px;background:#E5E7EB;border-radius:4px;height:8px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;border-radius:4px;
+                      background:linear-gradient(90deg,#9B1C1C,#C2820A);
+                      transition:width 0.6s ease;"></div>
+        </div>
+        <span style="min-width:28px;text-align:right;font-size:12px;font-weight:700;
+                     color:#111827;flex-shrink:0;">${obj[k]}</span>
       </div>
     </div>`;
   }).join('');
