@@ -290,6 +290,67 @@ sudo ./server
 
 ---
 
+## 💻 Running on Another System (Copy & Run)
+
+You **can** copy the project to another Windows machine and run it — with two mandatory steps on the target machine:
+
+### Step 1 — Copy these files/folders
+```
+QuantumSentry/
+├── backend/
+│   ├── server.exe          ← Pre-built binary (no Go needed)
+│   ├── quantumsentry.db    ← Copy this too to transfer all scan history
+│   └── frontend/           ← Must be next to server.exe
+│       ├── index.html
+│       ├── script.js
+│       └── style.css
+└── scanner/
+    └── scanner.exe         ← Pre-built scanner binary
+```
+
+> **Minimum to copy:** `backend/server.exe` + `backend/frontend/` folder.
+> The `scanner.exe` and `quantumsentry.db` are optional but recommended.
+
+### Step 2 — Install on the target machine (mandatory)
+
+| Required | Download | Notes |
+|---|---|---|
+| **Npcap** | [npcap.com/#download](https://npcap.com/#download) | ✅ Check **"WinPcap API-compatible mode"** during install |
+| **Administrator terminal** | Built-in to Windows | Raw packet capture requires elevated privileges |
+
+> **Go is NOT required** if you use the pre-built `server.exe` and `scanner.exe` binaries.
+
+### Step 3 — Run
+```powershell
+# Open PowerShell as Administrator
+cd path\to\backend
+.\server.exe
+# Open http://localhost:8080 in browser
+```
+
+### ⚠️ Common Issues on a New Machine
+
+| Problem | Cause | Fix |
+|---|---|---|
+| Scans all fail with `exit status 1` | Npcap not installed | Install Npcap from npcap.com |
+| Scans fail with `permission denied` | Not running as Administrator | Right-click PowerShell → "Run as Administrator" |
+| Blank dashboard (no data) | Fresh `quantumsentry.db` | Copy your existing `.db` file, or run some scans |
+| `server.exe` not found | Wrong directory | Must run from inside the `backend/` folder |
+| Port 8080 already in use | Another app on port 8080 | Set `$env:PORT=9090` before running |
+
+### Linux / macOS (instead of Npcap)
+```bash
+sudo apt install libpcap-dev   # Ubuntu/Debian
+# OR
+brew install libpcap           # macOS
+
+cd scanner && go build -o scanner .
+cd ../backend && go build -o server .
+sudo ./server
+```
+
+---
+
 ## 🔧 Configuration
 
 ### Environment Variables
